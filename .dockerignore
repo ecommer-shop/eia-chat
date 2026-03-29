@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+env/
+.env
+.DS_Store
+.mypy_cache/
+*.sqlite3
+*.db
+data/
+embeddings/
+__MACOSX/
+.git
+.gitignore
+node_modules/
+*.log
+build/
+dist/
+*.egg-info/
+
+# exclude local vector DB files (if present)
+.*vector*
