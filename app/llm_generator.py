@@ -19,7 +19,7 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
             if intent == "CATALOGO":
                 nombre = payload.get('name', 'Producto sin nombre')
                 Atributos = ", ".join(payload.get('attributes', []))
-                url = payload.get('url', '#')
+                url = payload.get('url ', '#')
                 context_text += f"\n- {nombre} (Atributos: {Atributos}). Link: {url}"
             else:
                 texto_doc = payload.get('text', 'Sin contenido')
@@ -38,6 +38,7 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
        "¡Buena elección! Por ahora no tengo el precio exacto aquí conmigo, pero puedo confirmarte que el modelo está en nuestro catálogo. ¿Te gustaría que te ayude con algo más sobre sus características?"
     4. SIN ALUCINACIONES: Si no hay contexto, no inventes. Invita al usuario a preguntar por otra categoría.
     5. FORMATO: Usa negritas para nombres de productos y listas para que sea fácil de leer.
+    6. ENLACES: Siempre que menciones un producto, incluye su enlace directo para facilitar la compra, pero con un espacio despues del enlace.
 
     CONTEXTO ACTUAL DE LA BASE DE DATOS:
     {context_text}
