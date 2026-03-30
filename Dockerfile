@@ -48,4 +48,5 @@ EXPOSE ${PORT}
 
 # Entrypoint: use sh -c to allow environment variable expansion for workers
 # Tune workers via UVICORN_WORKERS env var (set in Railway to scale horizontally)
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001} --workers ${UVICORN_WORKERS:-1}"]
+# Cambiamos "uvicorn" por "python -m uvicorn"
+CMD ["sh", "-c", "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001} --workers ${UVICORN_WORKERS:-1}"]
