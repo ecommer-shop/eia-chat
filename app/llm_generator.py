@@ -19,7 +19,7 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
             if intent == "CATALOGO":
                 nombre = payload.get('name', 'Producto sin nombre')
                 Atributos = ", ".join(payload.get('attributes', []))
-                url = payload.get('url ', '#')
+                url = payload.get('url', '#')
                 context_text += f"\n- {nombre} (Atributos: {Atributos}). Link: {url}"
             else:
                 texto_doc = payload.get('text', 'Sin contenido')
