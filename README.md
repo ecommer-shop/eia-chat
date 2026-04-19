@@ -69,5 +69,4 @@ docker run -p 8000:8000 --env-file .env eia-chat-gateway
 - `GET /health`: Estado de salud del servicio.
 - `GET /docs`: Documentación interactiva Swagger.
 
----
-Desarrollado con ❤️ para el ecosistema E-commerce.
+
