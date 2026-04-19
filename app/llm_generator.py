@@ -54,8 +54,8 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
             ],
             # 🔥 CAMBIO AQUÍ: Usamos el modelo más reciente de Groq 🔥
             model="llama-3.3-70b-versatile", 
-            temperature=0.3,
-            max_tokens=500,
+            temperature=0.2,
+            max_tokens=300,
         )
         
         return chat_completion.choices[0].message.content.strip()
