@@ -23,3 +23,10 @@ dist/
 
 # exclude local vector DB files (if present)
 .*vector*
+.venv
+.git
+__pycache__
+.env
+.pytest_cache
+*.pyc
+*.pyo

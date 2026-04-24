@@ -1,52 +1,48 @@
-FROM python:3.11-slim AS builder
+# Usa una imagen base de Python 3.13 slim
+FROM python:3.13-slim AS runtime
+
+# Instalamos uv copiando los binarios desde la imagen oficial
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Variables de entorno para optimizar uv y python
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-WORKDIR /src
-
-# Install build deps only in builder (minimize runtime image size)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential gcc \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy dependency manifest(s) first to leverage docker layer cache
-COPY requirements.txt ./
-
-# Upgrade pip and install dependencies into /install (isolated target)
-RUN python -m pip install --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir --target=/install -r requirements.txt
-
-
-FROM python:3.11-slim AS runtime
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-# Create a non-root user for security
-RUN groupadd --system app && useradd --system --gid app --create-home --home-dir /home/app app
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
-# Copy installed packages from builder into site-packages
-COPY --from=builder /install /usr/local/lib/python3.11/site-packages
+# Instalamos dependencias del sistema necesarias (gcc para algunas librerías si fuera necesario)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy application source (use .dockerignore to keep context small)
-COPY . /app
+# Copiamos solo los archivos de dependencias primero para aprovechar el cache de capas
+COPY pyproject.toml uv.lock ./
 
-# Ensure app directory is owned by non-root user
+# Instalamos las dependencias (sin instalar el proyecto aún y sin dependencias de desarrollo)
+RUN uv sync --frozen --no-install-project --no-dev
+
+# Copiamos el resto de la aplicación
+COPY . .
+
+# Sincronizamos el proyecto
+RUN uv sync --frozen --no-dev
+
+# Colocamos el entorno virtual en el PATH para que uvicorn sea ejecutable directamente
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Configuración de usuario no-root por seguridad
+RUN groupadd --system app && useradd --system --gid app --create-home --home-dir /home/app app
 RUN chown -R app:app /app
 
-# Default environment placeholders for configuration injection
+# Variables de entorno por defecto
 ENV PORT=8000
-ENV RAG_API_URL=""
-ENV VECTOR_DB_URL=""
-ENV OTHER_API_URL=""
+ENV UVICORN_WORKERS=1
 
-# Switch to non-root user
 USER app
 
-# Railway provides a PORT env var; use it at runtime. Expose for documentation.
 EXPOSE ${PORT}
 
-# Entrypoint: use sh -c to allow environment variable expansion for workers
-# Tune workers via UVICORN_WORKERS env var (set in Railway to scale horizontally)
-# Cambiamos "uvicorn" por "python -m uvicorn"
-CMD ["sh", "-c", "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001} --workers ${UVICORN_WORKERS:-1}"]
+# Ejecutamos con uvicorn directamente (ya está en el PATH gracias al venv de uv)
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers ${UVICORN_WORKERS}"]
