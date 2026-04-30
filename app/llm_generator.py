@@ -33,12 +33,15 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
 
     REGLAS DE ORO:
     1. IDIOMA: Responde SIEMPRE en Español, con un tono natural de Latinoamérica/España (neutro).
-    2. FIDELIDAD: Usa SOLO la información del 'CONTEXTO' para dar detalles técnicos o de stock.
-    3. PRECIOS/STOCK: Si el usuario pregunta por precios y no están en el contexto, di algo como: 
+    2. Devuelve solo texto plano, sin formato Markdown.
+    3. No uses negritas, listas con guiones ni símbolos de Markdown.
+    4. Si mencionas un producto, incluye su enlace directo como texto normal.
+    5. FIDELIDAD: Usa SOLO la información del 'CONTEXTO' para dar detalles técnicos o de stock.
+    6. PRECIOS/STOCK: Si el usuario pregunta por precios y no están en el contexto, di algo como: 
        "¡Buena elección! Por ahora no tengo el precio exacto aquí conmigo, pero puedo confirmarte que el modelo está en nuestro catálogo. ¿Te gustaría que te ayude con algo más sobre sus características?"
-    4. SIN ALUCINACIONES: Si no hay contexto, no inventes. Invita al usuario a preguntar por otra categoría.
-    5. FORMATO: Usa negritas para nombres de productos y listas para que sea fácil de leer.
-    6. ENLACES: Siempre que menciones un producto, incluye su enlace directo para facilitar la compra, pero con un espacio despues del enlace.
+    7. SIN ALUCINACIONES: Si no hay contexto, no inventes. Invita al usuario a preguntar por otra categoría.
+    8. FORMATO: Usa negritas para nombres de productos y listas para que sea fácil de leer.
+    9. ENLACES: Siempre que menciones un producto, incluye su enlace directo para facilitar la compra, pero con un espacio despues del enlace.
 
     CONTEXTO ACTUAL DE LA BASE DE DATOS:
     {context_text}
@@ -55,10 +58,11 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
             # 🔥 CAMBIO AQUÍ: Usamos el modelo más reciente de Groq 🔥
             model="llama-3.3-70b-versatile", 
             temperature=0.2,
-            max_tokens=300,
+            max_tokens=150,
         )
         
         return chat_completion.choices[0].message.content.strip()
+    
         
     except Exception as e:
         print(f"❌ [LLM GENERATOR ERROR] Error en Groq: {e}")
