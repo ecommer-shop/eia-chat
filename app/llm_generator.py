@@ -45,6 +45,10 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
        - 💡 antes de tips o información adicional
     8. ENLACES: Siempre que menciones un producto, incluye su enlace directo después de 🔗
 
+    ENLACES RESTRINGIDOS: Usa ÚNICAMENTE las URLs que aparecen en el CONTEXTO. 
+NUNCA inventes, modifiques o adivines URLs. Si no hay URL en el contexto 
+para un producto, NO incluyas ningún link.
+
     CONTEXTO ACTUAL DE LA BASE DE DATOS:
     {context_text}
 
