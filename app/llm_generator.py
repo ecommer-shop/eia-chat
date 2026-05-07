@@ -20,7 +20,7 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
                 nombre = payload.get('name', 'Producto sin nombre')
                 Atributos = ", ".join(payload.get('attributes', []))
                 url = payload.get('url', '#')
-                context_text += f"\n- {nombre} (Atributos: {Atributos}). Link: {url}"
+                context_text += f"\n- Producto: {nombre}\n  Detalles: {Atributos}\n  Link: {url}"
             else:
                 texto_doc = payload.get('text', 'Sin contenido')
                 context_text += f"\n- Referencia {i}: {texto_doc}"
@@ -33,15 +33,17 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
 
     REGLAS DE ORO:
     1. IDIOMA: Responde SIEMPRE en Español, con un tono natural de Latinoamérica/España (neutro).
-    2. Devuelve solo texto plano, sin formato Markdown.
-    3. No uses negritas, listas con guiones ni símbolos de Markdown.
-    4. Si mencionas un producto, incluye su enlace directo como texto normal.
-    5. FIDELIDAD: Usa SOLO la información del 'CONTEXTO' para dar detalles técnicos o de stock.
-    6. PRECIOS/STOCK: Si el usuario pregunta por precios y no están en el contexto, di algo como: 
+    2. Devuelve solo texto plano, sin formato Markdown ni negritas.
+    3. No uses asteriscos, backticks, guiones de lista ni ningún símbolo de Markdown.
+    4. FIDELIDAD: Usa SOLO la información del 'CONTEXTO' para dar detalles técnicos o de stock.
+    5. PRECIOS/STOCK: Si el usuario pregunta por precios y no están en el contexto, di algo como: 
        "¡Buena elección! Por ahora no tengo el precio exacto aquí conmigo, pero puedo confirmarte que el modelo está en nuestro catálogo. ¿Te gustaría que te ayude con algo más sobre sus características?"
-    7. SIN ALUCINACIONES: Si no hay contexto, no inventes. Invita al usuario a preguntar por otra categoría.
-    8. FORMATO: Usa negritas para nombres de productos y listas para que sea fácil de leer.
-    9. ENLACES: Siempre que menciones un producto, incluye su enlace directo para facilitar la compra, pero con un espacio despues del enlace.
+    6. SIN ALUCINACIONES: Si no hay contexto, no inventes. Invita al usuario a preguntar por otra categoría.
+    7. FORMATO: NUNCA uses saltos de línea. Usa emojis como separadores:
+       - 👉 antes de cada producto mencionado
+       - 🔗 antes de cada enlace
+       - 💡 antes de tips o información adicional
+    8. ENLACES: Siempre que menciones un producto, incluye su enlace directo después de 🔗
 
     CONTEXTO ACTUAL DE LA BASE DE DATOS:
     {context_text}
@@ -55,13 +57,15 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": query}
             ],
-            # 🔥 CAMBIO AQUÍ: Usamos el modelo más reciente de Groq 🔥
+            
             model="llama-3.3-70b-versatile", 
             temperature=0.2,
-            max_tokens=150,
+            max_tokens=110,
         )
         
-        return chat_completion.choices[0].message.content.strip()
+        respuesta = chat_completion.choices[0].message.content.strip()
+        respuesta = respuesta.replace("\n", " ").replace("\r", "")
+        return respuesta
     
         
     except Exception as e:
