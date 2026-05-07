@@ -60,7 +60,7 @@ def generate_final_response(query: str, intent: str, context_items: list) -> str
             
             model="llama-3.3-70b-versatile", 
             temperature=0.2,
-            max_tokens=70,
+            max_tokens=110,
         )
         
         respuesta = chat_completion.choices[0].message.content.strip()
