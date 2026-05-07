@@ -13,6 +13,10 @@ dependencies = [
     "psycopg2-binary>=2.9.9",
     "python-dotenv>=1.0.0",
     "groq>=0.5.0",
+    "pyjwt>=2.12.1",
+    "passlib>=1.7.4",
+    "bcrypt>=5.0.0",
+    "python-multipart>=0.0.27",
 ]
 
 [project.scripts]
