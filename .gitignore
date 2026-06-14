@@ -1,6 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+
+# Environment
+.env
+.env.*
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+
+# Build artifacts
+build/
+*.egg-info/
+
+# Local tool data
+*.log
+
+# Existing entries (kept)
 .venv/
 venv/
 env/
-.env
-__pycache__/
-*.pyc   
