@@ -34,3 +34,28 @@ async def chat_endpoint(request: ChatRequest):
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "service": "Gateway Bot API"}
+
+
+# --- DEBUG: endpoint local para simular la API RAG durante pruebas ---
+@app.post("/retrieve_context")
+async def retrieve_context_debug(payload: dict):
+    query = (payload or {}).get("query", "")
+    q = query.lower()
+    # Respuesta de ejemplo que simula Qdrant/Gateway RAG
+    products = []
+    policies = []
+
+    if "adidas" in q:
+        products = [
+            {"payload": {"name": "Adidas Superstar", "attributes": ["talla 42", "color blanco"], "url": "https://shop.example.com/adidas-superstar-123"}},
+            {"payload": {"name": "Adidas Gazelle", "attributes": ["talla 41", "color negro"], "url": "https://shop.example.com/adidas-gazelle-456"}}
+        ]
+
+    if any(k in q for k in ("devolucion", "devoluciones", "retracto", "politi", "politica", "reembolso")):
+        policies = [
+            {"payload": {"text": "Tienes derecho a retracto dentro de los 5 días hábiles posteriores a la entrega. El producto debe devolverse en buen estado."}}
+        ]
+
+    combined = products + policies
+    intent = ", ".join([x for x in ("CATALOGO" if products else None, "POLITICAS" if policies else None) if x]) or "GENERAL"
+    return {"intent": intent, "context": combined}
