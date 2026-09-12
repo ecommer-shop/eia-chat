@@ -25,6 +25,7 @@ def load_stores() -> dict[int, StoreConfig]:
         audience = store_def.get("audience", "CLIENTE")
         language = store_def.get("language", "es")
         channel_tokens = store_def.get("channel_tokens", [])
+        few_shot = store_def.get("few_shot_examples", [])
         prompts = store_def.get("system_prompt", {})
         default_prompt = prompts.get("default", f"Eres el asistente virtual de {store_name}.")
         inbox_map_raw = store_def.get("inbox_map", {})
@@ -39,6 +40,7 @@ def load_stores() -> dict[int, StoreConfig]:
                 audience=audience,
                 system_prompt=prompt,
                 language=language,
+                few_shot=list(few_shot),
             )
         logger.info(
             "Tienda '%s' cargada: %d inboxes, global=%s, tokens=%s",

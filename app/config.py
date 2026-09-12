@@ -23,6 +23,16 @@ class Settings:
     # --- Redis/Valkey (memory) ---
     REDIS_URL: str | None = os.getenv("REDIS_URL") or os.getenv("VALKEY_URL")
 
+    # --- Retriever ---
+    RETRIEVER_MIN_SCORE: float = float(os.getenv("RETRIEVER_MIN_SCORE", "0.4"))
+
+    # --- Langfuse (observabilidad / tracing) ---
+    LANGFUSE_PUBLIC_KEY: str | None = os.getenv("LANGFUSE_PUBLIC_KEY")
+    LANGFUSE_SECRET_KEY: str | None = os.getenv("LANGFUSE_SECRET_KEY")
+    LANGFUSE_BASE_URL: str | None = os.getenv("LANGFUSE_BASE_URL") or os.getenv(
+        "LANGFUSE_HOST", "https://cloud.langfuse.com"
+    )
+
     # --- Gateway ---
     PORT: int = int(os.getenv("PORT", "8080"))
 

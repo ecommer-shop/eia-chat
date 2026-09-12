@@ -45,6 +45,9 @@ htmlcov/
 .nox/
 coverage.xml
 
+# Eval runner (resultados de corridas locales)
+eval/report.json
+
 # Logs
 *.log
 logs/

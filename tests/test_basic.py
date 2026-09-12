@@ -38,6 +38,16 @@ class TestStoreResolver:
         assert resolve_store(2).store_name == "ecommer"
         assert resolve_store(10).store_name == "sol-y-luna"
 
+    def test_ecommer_has_few_shot_examples(self):
+        store = resolve_store(2)
+        assert len(store.few_shot) >= 4
+        roles = {e["role"] for e in store.few_shot}
+        assert {"user", "assistant"} == roles
+
+    def test_store_without_few_shot_defaults_empty(self):
+        store = resolve_store(99)
+        assert store.few_shot == []
+
 
 class TestStoreLoader:
     def test_load_stores(self):
@@ -108,6 +118,27 @@ class TestIntentClassifier:
         result = _keyword_fallback("quiero comprar adidas y cuál es su política de devoluciones?")
         assert "CATALOGO" in result
         assert "POLITICAS" in result
+
+    def test_accents_normalized(self):
+        result = _keyword_fallback("¿cuál es la política de envíos a Bogotá?")
+        assert "POLITICAS" in result
+
+    def test_catalogo_necesito(self):
+        result = _keyword_fallback("necesito unos audífonos para la escuela")
+        assert "CATALOGO" in result
+
+    def test_catalogo_venden_talla(self):
+        result = _keyword_fallback("¿venden camisas talla M?")
+        assert "CATALOGO" in result
+
+    def test_politicas_envios(self):
+        result = _keyword_fallback("¿tienen envíos a Bogotá?")
+        assert "POLITICAS" in result
+
+    def test_greeting_never_overrides_real_intent(self):
+        result = _keyword_fallback("hola, quiero comprar un producto")
+        assert "CONVERSACIONAL" not in result
+        assert "CATALOGO" in result
 
     def test_parse_intent_output_valid(self):
         result = _parse_intent_output("CATALOGO, POLITICAS")

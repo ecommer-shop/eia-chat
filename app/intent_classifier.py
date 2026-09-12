@@ -1,6 +1,8 @@
 import re
 import logging
+import unicodedata
 from groq import AsyncGroq
+from langfuse import observe
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -33,25 +35,86 @@ def _parse_intent_output(raw: str) -> list[str]:
     return list(dict.fromkeys(t for t in tokens if t in valid))
 
 
+def _normalize(text: str) -> str:
+    """Normaliza texto para comparación: minúsculas y sin tildes."""
+    text = text.lower()
+    text = unicodedata.normalize("NFD", text)
+    return "".join(c for c in text if unicodedata.category(c) != "Mn")
+
+
+_CATALOGO_RE = re.compile(
+    r"\b(?:"
+    r"compr(?:a|as|o|amos|an|ar|e)|"
+    r"quiero|quieres|quiere|quisiera|necesito|necesitamos|necesitas|"
+    r"busco|busca|buscas|buscamos|buscar|"
+    r"vende|venden|vendes|vendo|vendemos|"
+    r"tiene|tienen|hay|existe|existen|disponible|disponibles|"
+    r"cuesta|cuestan|cuanto|cuanta|vale|valor|precio|precios|costo|stock|"
+    r"producto|productos|articulo|articulos|"
+    r"talla|tallas|modelo|modelos|marca|marcas|color|colores|"
+    r"caracteristica|caracteristicas|catalogo|catalogos|categoria|categorias"
+    r")\b"
+)
+
+_POLITICAS_RE = re.compile(
+    r"\b(?:"
+    r"devolucion|devoluciones|devolver|reversion|revertir|"
+    r"garantia|garantias|"
+    r"envio|envios|envian|enviamos|envias|despacho|despachos|"
+    r"politica|politicas|"
+    r"cambio|cambios|cambiar|cambias|"
+    r"reembolso|reembolsos|"
+    r"retracto|retractarse|"
+    r"domicilio|domicilios|"
+    r"cancelar|cancela"
+    r")\b"
+)
+
+_INFO_GENERAL_RE = re.compile(
+    r"\b(?:"
+    r"ecommer|empresa|"
+    r"suscripcion|suscripciones|membresia|membresias|"
+    r"costo|costos|cobro|cobros|"
+    r"wompi|dian|factura|facturacion|facturar|"
+    r"pago|pagos|pagar|pasarela|pasarelas|transaccion|transacciones|"
+    r"mision|vision|"
+    r"soporte|"
+    r"horario|horarios|ubicacion|ubicaciones|direccion|contacto|contactar|contactanos|"
+    r"quienes|funciona|funcionan|como funciona"
+    r")\b"
+)
+
+_CONVERSACIONAL_RE = re.compile(
+    r"\b(?:"
+    r"hola|hey|saludos|"
+    r"buenos dias|buen dia|buenas tardes|buenas noches|buenas|"
+    r"gracias|agradezco|"
+    r"que tal|como estas|como te va|que mas|"
+    r"todo bien|bien y tu|genial|excelente|perfecto|listo"
+    r")\b"
+)
+
+
 def _keyword_fallback(query: str) -> list[str]:
-    q = query.lower()
+    q = _normalize(query)
     detected: list[str] = []
 
-    if re.search(r"\b(compra|comprar|producto|productos|stock|precio|caracter[ií]stica|cat[aá]logo|tiene|tengo|buscar|dime)\b", q):
+    if _CATALOGO_RE.search(q):
         detected.append("CATALOGO")
 
-    if re.search(r"\b(devoluci[oó]n|devoluciones|garant[ií]a|env[ií]o|envios|pol[ií]tica|cambio|reembolso)\b", q):
+    if _POLITICAS_RE.search(q):
         detected.append("POLITICAS")
 
-    if re.search(r"\b(ecommer|suscripci[oó]n|costos|wompi|dian|facturaci[oó]n|pago|pasarela|misi[oó]n|soporte|empresa|como funciona)\b", q):
+    if _INFO_GENERAL_RE.search(q):
         detected.append("INFO_GENERAL")
 
-    if not detected and re.search(r"\b(hola|buenos|buenas|gracias|qué tal|buen dia|buenas tardes|saludos)\b", q):
+    if not detected and _CONVERSACIONAL_RE.search(q):
         detected.append("CONVERSACIONAL")
 
     return list(dict.fromkeys(detected))
 
 
+@observe(as_type="generation", name="classify_intent")
 async def classify_intent(query: str) -> list[str]:
     logger.info("Clasificando intención: '%s'", query)
     try:

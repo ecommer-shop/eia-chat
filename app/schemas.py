@@ -30,3 +30,8 @@ class ChatResponse(BaseModel):
     intent_detected: str
     sources_used: int
     conversation_id: str
+
+
+class AgentChatResponse(ChatResponse):
+    escalado: bool = Field(default=False, description="True si la conversación fue escalada a humano")
+    tools_used: list[str] = Field(default_factory=list, description="Herramientas invocadas por el agente")

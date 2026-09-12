@@ -11,7 +11,7 @@ User (Chatwoot) → POST /chat → Intent Classifier (Groq)
                                       ↓
                               Memory Retrieval (Redis)
                                       ↓
-                              LLM Generation (Groq Llama)
+                              LLM Generation (Groq gpt-oss-120b)
                                       ↓
                                 ChatResponse
 ```
@@ -21,10 +21,10 @@ User (Chatwoot) → POST /chat → Intent Classifier (Groq)
 | Component | Service |
 |---|---|
 | API Framework | FastAPI + Uvicorn |
-| Intent Classification | Groq (Llama 3.1 8B) |
+| Intent Classification | Groq (gpt-oss-20b, reasoning) |
 | Embeddings | Azure OpenAI (text-embedding-3-small) |
 | Vector Database | Qdrant |
-| LLM Generation | Groq (Llama 3.3 70B) |
+| LLM Generation | Groq (gpt-oss-120b, reasoning) |
 | Conversational Memory | Redis |
 | Package Manager | uv |
 | Deployment | Railway (Docker) |
@@ -102,7 +102,7 @@ Main RAG endpoint.
 {
   "query": "Tienen envíos a todo el país?",
   "conversation_id": "cw_12345",
-  "inbox_id": 1,
+  "inbox_id": 2,
   "user_id": 67890,
   "channel": "whatsapp"
 }
@@ -137,11 +137,11 @@ Each store is identified by `inbox_id` (Chatwoot inbox). See `app/store_resolver
 
 | inbox_id | Store | Channel |
 |---|---|---|
-| 1 | ecommer | whatsapp |
-| 2 | ecommer | instagram |
-| 3 | ecommer | messenger |
-| 4 | ecommer | shop |
-| 5 | ecommer | admin |
+| 2 | ecommer | whatsapp |
+| 3 | ecommer | shop |
+| 4 | ecommer | admin |
+| 5 | ecommer | instagram |
+| 6 | ecommer | messenger |
 | 10 | sol-y-luna | whatsapp |
 | 11 | sol-y-luna | instagram |
 | 12 | sol-y-luna | messenger |
@@ -159,10 +159,10 @@ Each store is identified by `inbox_id` (Chatwoot inbox). See `app/store_resolver
 | `AZURE_OPENAI_API_KEY` | Yes | Azure OpenAI API key |
 | `AZURE_OPENAI_DEPLOYMENT` | No | Embedding model (default: `text-embedding-3-small`) |
 | `GROQ_API_KEY` | Yes | Groq API key |
-| `GROQ_ROUTER_MODEL` | No | Intent classifier model (default: `llama-3.1-8b-instant`) |
-| `GROQ_CHAT_MODEL` | No | Generation model (default: `llama-3.3-70b-versatile`) |
+| `GROQ_ROUTER_MODEL` | Yes | Router model (e.g. `openai/gpt-oss-20b`). No default since 2026-08-29. Reasoning model → use generous max_tokens (256) |
+| `GROQ_CHAT_MODEL` | Yes | Generation model (e.g. `openai/gpt-oss-120b`). No default since 2026-08-29. Reasoning model → use generous max_tokens (1024) |
 | `REDIS_URL` | Yes | Redis connection URL |
-| `PORT` | No | Server port (default: `8000`) |
+| `PORT` | No | Server port (default: `8080`; `8000` via `uv run dev`) |
 
 ## Deployment to Railway
 

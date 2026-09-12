@@ -1,4 +1,5 @@
 import logging
+import re
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,13 +7,16 @@ from groq import AsyncGroq
 from pydantic import ValidationError
 
 from app.config import settings, validate_settings
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import ChatRequest, ChatResponse, AgentChatResponse
 from app.store_resolver import resolve_store, init_stores, reload_stores, get_inbox_map
 from app.store_loader import list_stores_summary
 from app.intent_classifier import classify_intent
-from app.retriever import search_context
+from app.retriever import search_context, list_categories
 from app.memory import get_history, save_message
 from app.llm_generator import build_prompt
+from app.grounding import apply_grounding
+from app.renderer import annotate_products, render_product_footer
+from app.agent.core import run_agent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +39,12 @@ app.add_middleware(
 )
 
 _groq_client: AsyncGroq | None = None
+
+_CATEGORIES_QUERY_RE = re.compile(r"categor[ií]as", re.IGNORECASE)
+
+
+def _is_categories_query(query: str) -> bool:
+    return bool(_CATEGORIES_QUERY_RE.search(query))
 
 
 def _get_groq() -> AsyncGroq:
@@ -71,7 +81,18 @@ async def chat_endpoint(request: ChatRequest):
     intent_str = ", ".join(intents)
     logger.info("Intenciones: %s", intent_str)
 
-    context_items = await search_context(query, store, intents)
+    if "CATALOGO" in intents and _is_categories_query(query):
+        categories = await list_categories(store)
+        context_items = (
+            [{"score": 1.0, "payload": {
+                "metadata": {"categories": categories, "name": "Catálogo de la tienda"},
+                "text": f"Categorías disponibles en la tienda: {', '.join(categories)}.",
+            }}]
+            if categories
+            else []
+        )
+    else:
+        context_items = await search_context(query, store, intents)
 
     history = get_history(request.conversation_id)
 
@@ -94,6 +115,17 @@ async def chat_endpoint(request: ChatRequest):
         raw = completion.choices[0].message.content or ""
         answer = raw.encode("utf-8", errors="replace").decode("utf-8")
         answer = answer.replace("\n", " ").replace("\r", "").strip()
+        answer, grounding_issues = apply_grounding(
+            answer, context_items, history, intent=intent_str
+        )
+        if grounding_issues:
+            logger.warning("/chat :: grounding bloqueó la respuesta: %s", grounding_issues)
+        elif answer:
+            clean_text, mentioned = annotate_products(answer, context_items, intent=intent_str)
+            footer = render_product_footer(mentioned)
+            answer = f"{clean_text} {footer}".strip() if footer else clean_text
+            if mentioned:
+                logger.info("/chat :: links agregados: %s", [p.url for p in mentioned])
         if not answer:
             logger.warning(
                 "Groq devolvió contenido vacío (finish_reason=%s)",
@@ -112,6 +144,45 @@ async def chat_endpoint(request: ChatRequest):
         intent_detected=intent_str,
         sources_used=len(context_items),
         conversation_id=request.conversation_id,
+    )
+
+
+@app.post("/agent/chat", response_model=AgentChatResponse)
+async def agent_chat(request: ChatRequest):
+    """Fase 3/6 — Endpoint del agente conversacional (a mano, sin framework).
+
+    Mismo contrato que /chat. Devuelve additionally `escalado` y `tools_used`.
+    No reemplaza a /chat hasta que supere el baseline del golden set.
+    """
+    query = request.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío.")
+
+    try:
+        result = await run_agent(
+            query=query,
+            conversation_id=request.conversation_id or "",
+            inbox_id=request.inbox_id,
+            user_id=request.user_id,
+            channel=request.channel,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    store = resolve_store(request.inbox_id)
+
+    logger.info(
+        "Agente resultado: '%s' | tienda=%s (%s) | escalado=%s | tools=%s",
+        query, store.store_name, store.channel_name, result.escalado, result.tools_used,
+    )
+
+    return AgentChatResponse(
+        answer=result.answer,
+        intent_detected=result.intent_detected,
+        sources_used=result.sources_used,
+        conversation_id=result.conversation_id,
+        escalado=result.escalado,
+        tools_used=result.tools_used,
     )
 
 
