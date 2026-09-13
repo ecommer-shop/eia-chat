@@ -1,4 +1,4 @@
-# EIA RAG Gateway
+# EIA Chat Gateway
 
 Unified RAG gateway for Ecommer — intent classification, vector search, conversational memory, and LLM generation.
 
@@ -32,7 +32,7 @@ User (Chatwoot) → POST /chat → Intent Classifier (Groq)
 ## Project Structure
 
 ```
-eia-rag/
+eia-chat/
 ├── app/
 │   ├── main.py              # FastAPI app + endpoints
 │   ├── config.py            # Environment variables
@@ -64,8 +64,8 @@ eia-rag/
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USER/eia-rag.git
-cd eia-rag
+git clone https://github.com/ecommer-shop/eia-chat.git
+cd eia-chat
 
 # Copy environment variables
 cp .env.example .env
@@ -84,10 +84,10 @@ The API will be available at `http://localhost:8000`.
 
 ```bash
 # Build image
-docker build -t eia-rag .
+docker build -t eia-chat .
 
 # Run container
-docker run -p 8000:8000 --env-file .env eia-rag
+docker run -p 8000:8000 --env-file .env eia-chat
 ```
 
 ## API Endpoints

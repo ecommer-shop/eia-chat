@@ -1,6 +1,6 @@
-# Golden set de eia-rag (`eval/`)
+# Golden set de eia-chat (`eval/`)
 
-Suite de evaluación **dev-only** de eia-rag. Contiene un conjunto simulado de
+Suite de evaluación **dev-only** de eia-chat. Contiene un conjunto simulado de
 casos restringido a lo que **realmente existe** en la colección Qdrant
 `COMPLETA` y un runner que mide la tasa de acierto de `POST /chat` contra una
 **instancia local**.
@@ -87,7 +87,7 @@ La intención detectada solo se verifica con `--check-intent`.
 ## Uso
 
 ```bash
-# 1) Levantar eia-rag local
+# 1) Levantar eia-chat local
 uv sync
 uv run dev          # arranca en :8000
 
