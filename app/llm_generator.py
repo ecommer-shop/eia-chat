@@ -1,12 +1,5 @@
 from app.templates.prompts import SYSTEM_PROMPT_TEMPLATE
 
-_store_prompt: str | None = None
-
-
-def set_store_prompt(prompt: str) -> None:
-    global _store_prompt
-    _store_prompt = prompt
-
 
 def _find_url(payload: dict) -> str:
     if not isinstance(payload, dict):

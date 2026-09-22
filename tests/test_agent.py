@@ -116,8 +116,8 @@ class _FakeGroq:
             return SimpleNamespace(choices=[choice])
 
 
-def _run(query, conversation_id="conv-1", inbox_id=2):
-    return asyncio.run(run_agent(query, conversation_id, inbox_id))
+def _run(query, conversation_id="conv-1", account_id=1, inbox_id=2):
+    return asyncio.run(run_agent(query, conversation_id, account_id, inbox_id))
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +135,8 @@ class TestToolRegistry:
 
 class TestStoreMappingFlag:
     def test_mapped_store_is_mapped(self):
-        assert resolve_store(2).is_mapped is True
-        assert resolve_store(10).is_mapped is True
+        assert resolve_store(1, 2).is_mapped is True
+        assert resolve_store(5, 13).is_mapped is True
 
     def test_unknown_store_not_mapped(self):
         assert resolve_store(99).is_mapped is False
@@ -154,7 +154,7 @@ class TestEscalate:
         monkeypatch.setattr("app.agent.core.save_message",
                             lambda cid, role, content: saved.append((role, content)))
 
-        result = _run("¿tienen audífonos?", conversation_id="c99", inbox_id=99)
+        result = _run("¿tienen audífonos?", conversation_id="c99", account_id=99)
 
         assert result.escalado is True
         assert result.escalado
@@ -166,7 +166,7 @@ class TestEscalate:
     def test_escalate_keeps_conversation_id(self, monkeypatch):
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["INFO_GENERAL"]))
         monkeypatch.setattr("app.agent.core.save_message", lambda *a: None)
-        result = _run("¿qué es Ecommer?", conversation_id="c99-bis", inbox_id=99)
+        result = _run("¿qué es Ecommer?", conversation_id="c99-bis", account_id=99)
         assert result.conversation_id == "c99-bis"
         assert result.escalado is True
 
@@ -176,7 +176,7 @@ class TestDispatch:
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
         calls = []
         monkeypatch.setattr(tools, "search_context", _recording_search(calls))
-        monkeypatch.setattr(tools, "_get_groq", lambda: _FakeGroq("Respuesta del agente."))
+        monkeypatch.setattr(tools, "get_groq", lambda: _FakeGroq("Respuesta del agente."))
 
         result = _run("¿tienen audífonos KZ Castor Pro?", inbox_id=2)
 
@@ -191,7 +191,7 @@ class TestDispatch:
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["POLITICAS"]))
         calls = []
         monkeypatch.setattr(tools, "search_context", _recording_search(calls))
-        monkeypatch.setattr(tools, "_get_groq", lambda: _FakeGroq("Política."))
+        monkeypatch.setattr(tools, "get_groq", lambda: _FakeGroq("Política."))
 
         result = _run("¿cuál es la política de devoluciones?", inbox_id=2)
 
@@ -204,7 +204,7 @@ class TestDispatch:
                             _stub_classify(["CATALOGO", "POLITICAS"]))
         calls = []
         monkeypatch.setattr(tools, "search_context", _recording_search(calls))
-        monkeypatch.setattr(tools, "_get_groq", lambda: _FakeGroq("Mixta."))
+        monkeypatch.setattr(tools, "get_groq", lambda: _FakeGroq("Mixta."))
 
         result = _run("¿venden café y cuál es la política?", inbox_id=2)
 
@@ -219,7 +219,7 @@ class TestDispatch:
         def _boom_search(*args, **kwargs):
             raise AssertionError("CONVERSACIONAL no debe llamar al retriever")
         monkeypatch.setattr(tools, "search_context", _boom_search)
-        monkeypatch.setattr(tools, "_get_groq", lambda: _FakeGroq("¡Hola!"))
+        monkeypatch.setattr(tools, "get_groq", lambda: _FakeGroq("¡Hola!"))
 
         result = _run("hola, buenos días", inbox_id=2)
 
@@ -233,7 +233,7 @@ class TestLLMFallbacks:
     def test_empty_content_fallback(self, monkeypatch):
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
-        monkeypatch.setattr(tools, "_get_groq", lambda: _FakeGroq(content="", finish_reason="stop"))
+        monkeypatch.setattr(tools, "get_groq", lambda: _FakeGroq(content="", finish_reason="stop"))
 
         result = _run("¿cuánto cuesta el KZ?", inbox_id=2)
 
@@ -242,7 +242,7 @@ class TestLLMFallbacks:
     def test_groq_error_fallback(self, monkeypatch):
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
-        monkeypatch.setattr(tools, "_get_groq",
+        monkeypatch.setattr(tools, "get_groq",
                             lambda: _FakeGroq(error=RuntimeError("boom")))
 
         result = _run("¿tienen café orgánico?", inbox_id=2)
@@ -258,7 +258,7 @@ class TestNoContextGuard:
             return []
         monkeypatch.setattr(tools, "search_context", _no_context)
         fake = _FakeGroq("Respuesta sin contexto.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         _run("¿tienen audífonos?", inbox_id=2)
 
@@ -271,7 +271,7 @@ class TestNoContextGuard:
             return [_product(score=0.9, name="KZ Castor Pro")]
         monkeypatch.setattr(tools, "search_context", _with_context)
         fake = _FakeGroq("Respuesta con contexto.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         _run("¿tienen KZ Castor Pro?", inbox_id=2)
 
@@ -289,7 +289,7 @@ class TestNoContextGuard:
                           "content": "👉 Panela orgánica 🔗 https://ecommer.shop/es/product/panela-organica"}],
         )
         fake = _FakeGroq("Puedo recomendarte la panela de antes.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         _run("¿qué marcas hay?", inbox_id=2)
 
@@ -306,7 +306,7 @@ class TestFollowUpRescue:
             {"role": "user", "content": "¿qué productos tienes?"},
         ])
         fake = _FakeGroq("Te recomiendo la panela orgánica.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         result = _run("Busco poder comprar algún cage", conversation_id="rescue-1", inbox_id=2)
 
@@ -322,7 +322,7 @@ class TestFollowUpRescue:
                             _recording_conditional_search(calls, good_terms=("productos",)))
         monkeypatch.setattr(tools, "get_history", lambda cid: [])
         fake = _FakeGroq("No encontramos coincidencias exactas.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         result = _run("Busco poder comprar algún cage", conversation_id="rescue-2", inbox_id=2)
 
@@ -339,7 +339,7 @@ class TestFollowUpRescue:
         monkeypatch.setattr(tools, "get_history", lambda cid: [
             {"role": "user", "content": "¿tienen jaulas?"},
         ])
-        monkeypatch.setattr(tools, "_get_groq",
+        monkeypatch.setattr(tools, "get_groq",
                             lambda: _FakeGroq("No encontramos coincidencias exactas."))
 
         _run("¿tienen jaulas?", conversation_id="rescue-3", inbox_id=2)
@@ -356,7 +356,7 @@ class TestFollowUpUsesPriorProducts:
         monkeypatch.setattr(tools, "get_history", lambda cid: self.HISTORY)
         monkeypatch.setattr(tools, "search_context", _fail_never)
         fake = _FakeGroq("Te recomiendo la panela orgánica.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         result = _run("¿cuál me recomiendas?", conversation_id="followup-1", inbox_id=2)
 
@@ -404,7 +404,7 @@ class TestFewShotInjection:
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
         fake = _FakeGroq("Respuesta.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         _run("¿tienen panela?", inbox_id=2)
 
@@ -416,7 +416,7 @@ class TestFewShotInjection:
 class TestTrivialMessages:
     def test_dot_reply_short_without_llm_or_memory(self, monkeypatch):
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CONVERSACIONAL"]))
-        monkeypatch.setattr(tools, "_get_groq", _fail_never)
+        monkeypatch.setattr(tools, "get_groq", _fail_never)
         monkeypatch.setattr(tools, "search_context", _fail_never)
         saved = []
         monkeypatch.setattr("app.agent.core.save_message", lambda *a: saved.append(a))
@@ -430,7 +430,7 @@ class TestTrivialMessages:
 
     def test_emoji_reply_short(self, monkeypatch):
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CONVERSACIONAL"]))
-        monkeypatch.setattr(tools, "_get_groq", _fail_never)
+        monkeypatch.setattr(tools, "get_groq", _fail_never)
         saved = []
         monkeypatch.setattr("app.agent.core.save_message", lambda *a: saved.append(a))
 
@@ -447,7 +447,7 @@ class TestMemory:
         monkeypatch.setattr(tools, "get_history",
                             lambda cid: [{"role": "user", "content": "turno anterior"}])
         fake = _FakeGroq("Respuesta.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         _run("¿y trae estuche?", conversation_id="mem-1", inbox_id=2)
 
@@ -458,12 +458,12 @@ class TestMemory:
     def test_messages_saved_user_and_assistant(self, monkeypatch):
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
-        monkeypatch.setattr(tools, "_get_groq", lambda: _FakeGroq("Respuesta."))
+        monkeypatch.setattr(tools, "get_groq", lambda: _FakeGroq("Respuesta."))
         saved = []
         monkeypatch.setattr("app.agent.core.save_message",
                             lambda cid, role, content: saved.append((role, content)))
 
-        _run("¿tienen amigurumis?", conversation_id="mem-2", inbox_id=10)
+        _run("¿tienen amigurumis?", conversation_id="mem-2")
 
         assert saved == [("user", "¿tienen amigurumis?"), ("assistant", "Respuesta.")]
 
@@ -476,7 +476,7 @@ class TestGroundingGuardrail:
             return []
         monkeypatch.setattr(tools, "search_context", _no_context)
         fake = _FakeGroq("👉 iPhone 15 🔗 https://ecommer.shop/product/iphone-15")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         result = _run("¿tienen iPhone 15?", inbox_id=2)
 
@@ -490,7 +490,7 @@ class TestGroundingGuardrail:
         monkeypatch.setattr(tools, "search_context", _with_context)
         url = "https://ecommer.shop/es/product/kz-castor-pro-bass-edition"
         fake = _FakeGroq(f"Te recomiendo el KZ Castor Pro 🔗 {url}")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         result = _run("¿tienen KZ Castor Pro?", inbox_id=2)
 
@@ -510,7 +510,7 @@ class TestGroundingGuardrail:
         ])
         url = "https://ecommer.shop/product/panela-organica"
         fake = _FakeGroq(f"Puedes ir por la de antes 👉 Panela orgánica 🔗 {url}")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         result = _run("¿me recomiendas la panela?", inbox_id=2)
 
@@ -523,7 +523,7 @@ class TestGroundingGuardrail:
             return [_product(score=0.9, name="KZ Castor Pro")]
         monkeypatch.setattr(tools, "search_context", _with_context)
         fake = _FakeGroq("Te recomiendo el KZ Castor Pro, ideal para escuchar música.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         result = _run("¿me recomiendas el KZ?", inbox_id=2)
 
@@ -540,7 +540,7 @@ class TestCategoriesDispatch:
             return ["Audio", "Libros"]
         monkeypatch.setattr(tools, "list_categorias", _fake_cats)
         fake = _FakeGroq("Tenemos las categorías Audio y Libros.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
         result = _run("¿qué categorías hay en tu tienda?", inbox_id=2)
 
@@ -554,7 +554,7 @@ class TestCategoriesDispatch:
         monkeypatch.setattr(tools, "list_categorias", _fail_never)
         calls = []
         monkeypatch.setattr(tools, "search_context", _recording_search(calls))
-        monkeypatch.setattr(tools, "_get_groq", lambda: _FakeGroq("Ok."))
+        monkeypatch.setattr(tools, "get_groq", lambda: _FakeGroq("Ok."))
 
         _run("¿tienen amigurumis?", inbox_id=2)
 
@@ -568,9 +568,9 @@ class TestCategoriesDispatch:
             return ["Aromaterapia"]
         monkeypatch.setattr(tools, "list_categorias", _fake_cats)
         fake = _FakeGroq("En Sol y Luna tenemos Aromaterapia.")
-        monkeypatch.setattr(tools, "_get_groq", lambda: fake)
+        monkeypatch.setattr(tools, "get_groq", lambda: fake)
 
-        result = _run("¿qué categorías manejan?", conversation_id="syL-1", inbox_id=10)
+        result = _run("¿qué categorías manejan?", conversation_id="syL-1", account_id=5, inbox_id=13)
 
         assert result.answer == "En Sol y Luna tenemos Aromaterapia."
         assert "list_categorias" in result.tools_used
@@ -584,6 +584,6 @@ class TestInputs:
     def test_missing_conversation_id_generates_one(self, monkeypatch):
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
-        monkeypatch.setattr(tools, "_get_groq", lambda: _FakeGroq("Respuesta."))
-        result = asyncio.run(run_agent("hola", "", 2))
+        monkeypatch.setattr(tools, "get_groq", lambda: _FakeGroq("Respuesta."))
+        result = asyncio.run(run_agent("hola", "", 1, 2))
         assert result.conversation_id.startswith("agent-")

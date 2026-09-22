@@ -100,6 +100,7 @@ def evaluate_case(case: dict, answers: list[str], intents: list[str] | None = No
     return {
         "id": case.get("id"),
         "tienda_id": case.get("tienda_id"),
+        "account_id": case.get("account_id"),
         "inbox_id": case.get("inbox_id"),
         "tags": case.get("tags", []),
         "intencion_esperada": case.get("intencion_esperada"),
@@ -130,6 +131,7 @@ def build_payload(case: dict, index: int, user_base: int) -> dict:
     return {
         "query": case["turnos"][index],
         "conversation_id": f"eval-{case['id']}",
+        "account_id": case.get("account_id"),
         "inbox_id": case["inbox_id"],
         "user_id": user_base + index,
         "channel": case.get("canal", "whatsapp"),

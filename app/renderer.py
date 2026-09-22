@@ -30,8 +30,7 @@ logger = logging.getLogger(__name__)
 
 LINK_FORMAT = "🔗 {name} — {url}"
 FOOTER_JOIN = " · "
-FOOTER_PREFIXES = ("🛒 Encuéntralos aquí:", "🛒 Aquí tienes los links:", "🔗 Links:")
-FOOTER_PREFIX = FOOTER_PREFIXES[0]
+FOOTER_PREFIX = "🛒 Encuéntralos aquí:"
 
 
 @dataclass

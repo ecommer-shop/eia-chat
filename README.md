@@ -102,6 +102,7 @@ Main RAG endpoint.
 {
   "query": "Tienen envíos a todo el país?",
   "conversation_id": "cw_12345",
+  "account_id": 1,
   "inbox_id": 2,
   "user_id": 67890,
   "channel": "whatsapp"
@@ -133,20 +134,14 @@ Health check.
 
 ## Multi-Tenant Support
 
-Each store is identified by `inbox_id` (Chatwoot inbox). See `app/store_resolver.py` for the full mapping.
+Each store is identified by `account_id` (Chatwoot account). The `inbox_id` only selects the channel (prompt) within the store. See `app/store_resolver.py` and `app/stores.json` for the full mapping.
 
-| inbox_id | Store | Channel |
+| account_id | Store | inbox_id → Channel |
 |---|---|---|
-| 2 | ecommer | whatsapp |
-| 3 | ecommer | shop |
-| 4 | ecommer | admin |
-| 5 | ecommer | instagram |
-| 6 | ecommer | messenger |
-| 10 | sol-y-luna | whatsapp |
-| 11 | sol-y-luna | instagram |
-| 12 | sol-y-luna | messenger |
-| 13 | sol-y-luna | shop |
-| 14 | sol-y-luna | admin |
+| 1 | ecommer (global) | 2=whatsapp, 3=shop, 4=admin, 5=instagram, 6=messenger, 7=instagram, 9=messenger |
+| 5 | ziru-acoustics | 13=shop |
+| 3 | phybuch | (pendiente) |
+| 8 | cos-store | (pendiente) |
 
 ## Environment Variables
 

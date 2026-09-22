@@ -1,20 +1,11 @@
 import re
 import logging
 import unicodedata
-from groq import AsyncGroq
 from langfuse import observe
+from app.clients import get_groq
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-_client: AsyncGroq | None = None
-
-
-def _get_client() -> AsyncGroq:
-    global _client
-    if _client is None:
-        _client = AsyncGroq(api_key=settings.GROQ_API_KEY)
-    return _client
 
 
 ROUTER_SYSTEM_PROMPT = """Eres el enrutador de intenciones de la plataforma Ecommer. Clasifica la entrada del usuario en una o varias de estas categorías:
@@ -118,7 +109,7 @@ def _keyword_fallback(query: str) -> list[str]:
 async def classify_intent(query: str) -> list[str]:
     logger.info("Clasificando intención: '%s'", query)
     try:
-        client = _get_client()
+        client = get_groq()
         completion = await client.chat.completions.create(
             messages=[
                 {"role": "system", "content": ROUTER_SYSTEM_PROMPT},

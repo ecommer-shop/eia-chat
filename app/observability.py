@@ -17,25 +17,9 @@ API usada (Langfuse Python SDK >= 4.15, modelo observations-first):
 import logging
 from typing import Any
 
-from langfuse import get_client, propagate_attributes
+from langfuse import propagate_attributes
 
 logger = logging.getLogger(__name__)
-
-# True si el cliente Langfuse quedó realmente activo (se puede trazar).
-# El cliente se deshabilita automáticamente si falta LANGFUSE_PUBLIC_KEY, pero
-# exponemos este flag para decisones de bajo coste en el código (p.ej. no
-# construir payloads de traces pesados si no se van a enviar).
-Langfuse = get_client()
-
-
-def is_enabled() -> bool:
-    """Devuelve True si Langfuse está configurado correctamente.
-
-    Un signo práctico: el public key fue suministrado. Si el cliente se
-    deshabilitó, get_client() existe pero no emite nada; este helper evita
-    construir input/output JSON innecesarios.
-    """
-    return bool(Langfuse._client and Langfuse._client.auth_public_key)
 
 
 def trace_attributes(

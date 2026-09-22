@@ -10,7 +10,8 @@ class ChatRequest(BaseModel):
         default_factory=lambda: f"shop-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}",
         description="ID de conversación",
     )
-    inbox_id: int = Field(default=1, description="ID del inbox de Chatwoot (→ tienda + canal)")
+    account_id: int | None = Field(default=None, description="ID de la cuenta Chatwoot (identifica la tienda)")
+    inbox_id: int = Field(default=1, description="ID del inbox de Chatwoot (→ canal dentro de la tienda)")
     user_id: int | None = Field(None, description="ID del usuario en Chatwoot")
     channel: str | None = Field(None, description="Canal de origen: whatsapp, instagram, messenger, shop, admin")
 

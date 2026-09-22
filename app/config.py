@@ -26,6 +26,17 @@ class Settings:
     # --- Retriever ---
     RETRIEVER_MIN_SCORE: float = float(os.getenv("RETRIEVER_MIN_SCORE", "0.4"))
 
+    # --- CORS (orígenes separados por coma; p. ej. "https://a.com,https://b.com") ---
+    CORS_ORIGINS: list[str] = [
+        o.strip()
+        for o in os.getenv("CORS_ORIGINS", "*").split(",")
+        if o.strip()
+    ]
+
+    # --- Rate limiting (por IP, ventana deslizante de 1 minuto) ---
+    # 0 desactiva el límite (útil para tests).
+    RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
+
     # --- Langfuse (observabilidad / tracing) ---
     LANGFUSE_PUBLIC_KEY: str | None = os.getenv("LANGFUSE_PUBLIC_KEY")
     LANGFUSE_SECRET_KEY: str | None = os.getenv("LANGFUSE_SECRET_KEY")

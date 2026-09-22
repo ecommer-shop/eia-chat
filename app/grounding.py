@@ -186,16 +186,3 @@ def apply_grounding(
         return FALLBACK_UNGROUNDED, relevant
 
     return text, []
-
-
-def ensure_product_links(
-    text: str,
-    context_items: list[dict],
-    intent: str = "",
-) -> tuple[str, list[str]]:
-    """Eliminado: el agregado de links vive ahora en `app.renderer`.
-
-    Mantenido como stub para no romper imports externos hasta la próxima
-    limpieza. Devuelve el texto sin tocar.
-    """
-    return text, []
