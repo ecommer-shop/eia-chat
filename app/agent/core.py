@@ -2,7 +2,7 @@
 
 Flujo determinista:
 
-    resolve_store(inbox_id) → classify_intent(query) → [tienda no mapeada → escalate]
+    resolve_store(account_id, inbox_id) → classify_intent(query) → [tienda no mapeada → escalate]
     → dispatch de herramientas por intención (search_catalogo/search_docs)
     → get_memory → answer (Groq) → save_message
 
@@ -67,16 +67,6 @@ def _new_conversation_id() -> str:
     return f"agent-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
 
-def _pick_tools(intents: list[str]) -> list[str]:
-    """Selecciona las herramientas de búsqueda según las intenciones."""
-    names: list[str] = []
-    if "CATALOGO" in intents:
-        names.append("search_catalogo")
-    if any(i in ("POLITICAS", "INFO_GENERAL") for i in intents):
-        names.append("search_docs")
-    return names
-
-
 def _is_categories_query(query: str) -> bool:
     return bool(_CATEGORIES_QUERY_RE.search(query))
 
@@ -120,6 +110,7 @@ async def _collect_context(
 async def run_agent(
     query: str,
     conversation_id: str,
+    account_id: int | None,
     inbox_id: int,
     user_id: int | None = None,
     channel: str | None = None,
@@ -128,7 +119,7 @@ async def run_agent(
 
     `channel` se acepta por paridad con `/chat`, pero la selección de prompt
     por canal sigue viniendo del `system_prompt` de la tienda resuelta por
-    `inbox_id` (igual que en el pipeline actual).
+    `account_id` + `inbox_id` (igual que en el pipeline actual).
 
     Trazabilidad: la función completa es un span `agent`; los atributos
     correlacionados (conversation/tienda/canal) se propagan a todas las
@@ -139,7 +130,7 @@ async def run_agent(
         raise ValueError("El mensaje no puede estar vacío.")
 
     conversation_id = conversation_id or _new_conversation_id()
-    store = resolve_store(inbox_id)
+    store = resolve_store(account_id, inbox_id)
 
     trace_ctx = trace_attributes(
         trace_name=f"agent-chat",
@@ -147,6 +138,7 @@ async def run_agent(
         session_id=conversation_id,
         tags=["agent", store.store_name, store.channel_name],
         metadata={
+            "account_id": account_id,
             "inbox_id": inbox_id,
             "tienda": store.store_name,
             "canal": store.channel_name,

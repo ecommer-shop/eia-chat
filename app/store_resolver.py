@@ -1,30 +1,22 @@
 import logging
-from dataclasses import dataclass, field
+from dataclasses import replace
+
+from app.models import StoreConfig
+from app.store_loader import load_stores
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class StoreConfig:
-    store_name: str
-    channel_name: str
-    channel_tokens: list[str] = field(default_factory=list)
-    is_global: bool = False
-    audience: str = "CLIENTE"
-    system_prompt: str = ""
-    language: str = "es"
-    is_mapped: bool = True
-    few_shot: list[dict] = field(default_factory=list)
+_ACCOUNT_MAP: dict[int, StoreConfig] = {}
 
 
-_INBOX_MAP: dict[int, StoreConfig] = {}
-
-
-def _fallback_store(inbox_id: int) -> StoreConfig:
+def _fallback_store(account_id: int | None, inbox_id: int | None) -> StoreConfig:
+    key = account_id if account_id is not None else inbox_id
+    key_str = str(key) if key is not None else "desconocida"
     return StoreConfig(
-        store_name=f"tienda-{inbox_id}",
+        store_name=f"tienda-{key_str}",
+        account_id=account_id,
         channel_name="unknown",
-        channel_tokens=[f"__unmapped_{inbox_id}__"],
+        channel_tokens=[f"__unmapped_{key_str}__"],
         is_global=False,
         audience="CLIENTE",
         is_mapped=False,
@@ -37,30 +29,31 @@ def _fallback_store(inbox_id: int) -> StoreConfig:
     )
 
 
-def resolve_store(inbox_id: int) -> StoreConfig:
-    if inbox_id in _INBOX_MAP:
-        return _INBOX_MAP[inbox_id]
-    return _fallback_store(inbox_id)
+def resolve_store(account_id: int | None, inbox_id: int | None = None) -> StoreConfig:
+    if account_id is not None and account_id in _ACCOUNT_MAP:
+        base = _ACCOUNT_MAP[account_id]
+        channel = base.inbox_map.get(inbox_id, "default")
+        prompt = base.prompts.get(channel, base.prompts.get("default", base.system_prompt))
+        return replace(base, channel_name=channel, system_prompt=prompt)
+    return _fallback_store(account_id, inbox_id)
 
 
-def get_inbox_map() -> dict[int, StoreConfig]:
-    return dict(_INBOX_MAP)
+def get_account_map() -> dict[int, StoreConfig]:
+    return dict(_ACCOUNT_MAP)
 
 
-def set_inbox_map(new_map: dict[int, StoreConfig]) -> None:
-    global _INBOX_MAP
-    _INBOX_MAP = new_map
-    logger.info("INBOX_MAP actualizado: %d inboxes", len(_INBOX_MAP))
+def set_account_map(new_map: dict[int, StoreConfig]) -> None:
+    global _ACCOUNT_MAP
+    _ACCOUNT_MAP = new_map
+    logger.info("ACCOUNT_MAP actualizado: %d tiendas", len(_ACCOUNT_MAP))
 
 
 def reload_stores() -> dict[str, int]:
-    from app.store_loader import load_stores
     new_map = load_stores()
-    set_inbox_map(new_map)
+    set_account_map(new_map)
     return {"loaded": len(new_map)}
 
 
 def init_stores() -> None:
-    from app.store_loader import load_stores
     new_map = load_stores()
-    set_inbox_map(new_map)
+    set_account_map(new_map)

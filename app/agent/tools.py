@@ -11,21 +11,20 @@ herramientas terminales: producen el texto final de la respuesta.
 import logging
 from typing import Awaitable, Callable
 
-from groq import AsyncGroq
 from langfuse import get_client, observe
 
+from app.clients import get_groq
 from app.config import settings
 from app.grounding import apply_grounding
 from app.llm_generator import build_prompt
 from app.memory import get_history
+from app.models import StoreConfig
 from app.observability import usage_details_from_groq
 from app.renderer import annotate_products, render_product_footer
 from app.retriever import search_context, list_categories
-from app.store_resolver import StoreConfig
+from app.models import StoreConfig
 
 logger = logging.getLogger(__name__)
-
-_groq_client: AsyncGroq | None = None
 
 # Fallback cordial de escalada a humano (sin integración con Chatwoot aún).
 # Mantener el término "configurada": el golden set (gs_025/gs_026) valida que
@@ -34,13 +33,6 @@ ESCALATION_MESSAGE = (
     "Aun no tengo informacion configurada para esta tienda. "
     "Un miembro del equipo te va a contactar pronto."
 )
-
-
-def _get_groq() -> AsyncGroq:
-    global _groq_client
-    if _groq_client is None:
-        _groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
-    return _groq_client
 
 
 def _update_retriever_scores(result: list[dict]) -> None:
@@ -141,7 +133,7 @@ async def answer(
             input={"messages": messages},
         )
         with observation as generation:
-            completion = await _get_groq().chat.completions.create(
+            completion = await get_groq().chat.completions.create(
                 messages=messages,
                 model=settings.GROQ_CHAT_MODEL,
                 temperature=0.2,

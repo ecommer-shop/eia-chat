@@ -1,5 +1,5 @@
 import pytest
-from app.store_resolver import resolve_store, StoreConfig, init_stores, reload_stores, get_inbox_map
+from app.store_resolver import resolve_store, StoreConfig, init_stores, reload_stores, get_account_map
 from app.store_loader import load_stores, list_stores_summary
 from app.intent_classifier import _keyword_fallback, _parse_intent_output
 from app.schemas import ChatRequest, ChatResponse
@@ -12,20 +12,22 @@ def _setup_stores():
 
 class TestStoreResolver:
     def test_global_store(self):
-        store = resolve_store(2)
+        store = resolve_store(1, 2)
         assert store.store_name == "ecommer"
+        assert store.account_id == 1
         assert store.is_global is True
         assert store.channel_tokens == []
         assert store.audience == "CLIENTE"
         assert store.channel_name == "whatsapp"
 
     def test_tenant_store(self):
-        store = resolve_store(10)
-        assert store.store_name == "sol-y-luna"
+        store = resolve_store(5, 13)
+        assert store.store_name == "ziru-acoustics"
+        assert store.account_id == 5
         assert store.is_global is False
-        assert "sol-y-luna-token" in store.channel_tokens
+        assert "ziru-acoustics-token" in store.channel_tokens
         assert store.audience == "CLIENTE"
-        assert store.channel_name == "whatsapp"
+        assert store.channel_name == "shop"
 
     def test_unknown_store_fallback(self):
         store = resolve_store(99)
@@ -35,11 +37,11 @@ class TestStoreResolver:
         assert store.channel_tokens == ["__unmapped_99__"]
 
     def test_other_stores_loaded(self):
-        assert resolve_store(2).store_name == "ecommer"
-        assert resolve_store(10).store_name == "sol-y-luna"
+        assert resolve_store(1, 2).store_name == "ecommer"
+        assert resolve_store(5, 13).store_name == "ziru-acoustics"
 
     def test_ecommer_has_few_shot_examples(self):
-        store = resolve_store(2)
+        store = resolve_store(1, 2)
         assert len(store.few_shot) >= 4
         roles = {e["role"] for e in store.few_shot}
         assert {"user", "assistant"} == roles
@@ -53,14 +55,14 @@ class TestStoreLoader:
     def test_load_stores(self):
         stores = load_stores()
         assert len(stores) > 0
-        assert 2 in stores
-        assert 10 in stores
+        assert 1 in stores
+        assert 5 in stores
 
     def test_list_stores_summary(self):
         summary = list_stores_summary()
         names = [s["store_name"] for s in summary]
         assert "ecommer" in names
-        assert "sol-y-luna" in names
+        assert "ziru-acoustics" in names
 
     def test_reload_stores(self):
         result = reload_stores()
@@ -70,27 +72,24 @@ class TestStoreLoader:
 
 class TestStoreConfigInboxMap:
     def test_ecommer_has_five_channels(self):
-        store = resolve_store(2)
+        store = resolve_store(1, 2)
         assert store.channel_name == "whatsapp"
-        store = resolve_store(5)
+        store = resolve_store(1, 5)
         assert store.channel_name == "instagram"
-        store = resolve_store(4)
+        store = resolve_store(1, 4)
         assert store.channel_name == "admin"
 
-    def test_sol_y_luna_has_five_channels(self):
-        store = resolve_store(10)
-        assert store.channel_name == "whatsapp"
-        store = resolve_store(11)
-        assert store.channel_name == "instagram"
-        store = resolve_store(14)
-        assert store.channel_name == "admin"
+    def test_ziru_has_channel(self):
+        store = resolve_store(5, 13)
+        assert store.channel_name == "shop"
+        store = resolve_store(5, 999)
+        assert store.channel_name == "default"
 
     def test_tenant_stores_different_tokens(self):
         stores = load_stores()
-        sol = stores[10]
-        ziru = [s for s in stores.values() if s.store_name == "ziru-acoustics"]
-        if ziru:
-            assert sol.channel_tokens != ziru[0].channel_tokens
+        ecommer = stores[1]
+        ziru = stores[5]
+        assert ecommer.channel_tokens != ziru.channel_tokens
 
 
 class TestIntentClassifier:
@@ -158,10 +157,12 @@ class TestSchemas:
         req = ChatRequest(query="hola", conversation_id="c1", inbox_id=1)
         assert req.query == "hola"
         assert req.user_id is None
+        assert req.account_id is None
 
     def test_chat_request_with_user(self):
-        req = ChatRequest(query="test", conversation_id="c1", inbox_id=2, user_id=123)
+        req = ChatRequest(query="test", conversation_id="c1", account_id=1, inbox_id=2, user_id=123)
         assert req.user_id == 123
+        assert req.account_id == 1
 
     def test_chat_response(self):
         resp = ChatResponse(

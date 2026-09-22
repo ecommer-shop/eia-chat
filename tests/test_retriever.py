@@ -77,7 +77,7 @@ class TestSearchContextExpansion:
                 ])
 
         monkeypatch.setattr("app.retriever._embed", _fake_embed)
-        monkeypatch.setattr("app.retriever._get_qdrant", lambda: _FakeClient())
+        monkeypatch.setattr("app.retriever.get_qdrant", lambda: _FakeClient())
 
         results = asyncio.run(
             search_context("quiero tecnologia", _global_store(), ["CATALOGO"])
@@ -101,7 +101,7 @@ class TestSearchContextExpansion:
                 ])
 
         monkeypatch.setattr("app.retriever._embed", _fake_embed)
-        monkeypatch.setattr("app.retriever._get_qdrant", lambda: _FakeClient())
+        monkeypatch.setattr("app.retriever.get_qdrant", lambda: _FakeClient())
 
         results = asyncio.run(
             search_context("¿política de envíos?", _global_store(), ["POLITICAS"])
@@ -125,7 +125,7 @@ class TestListCategories:
                     SimpleNamespace(payload={"text": "Categorías: Juguetes."}),
                 ], None
 
-        monkeypatch.setattr("app.retriever._get_qdrant", lambda: _FakeClient())
+        monkeypatch.setattr("app.retriever.get_qdrant", lambda: _FakeClient())
 
         result = asyncio.run(list_categories(_global_store()))
 
@@ -136,7 +136,7 @@ class TestListCategories:
             async def scroll(self, **kwargs):
                 return [], None
 
-        monkeypatch.setattr("app.retriever._get_qdrant", lambda: _FakeClient())
+        monkeypatch.setattr("app.retriever.get_qdrant", lambda: _FakeClient())
         assert asyncio.run(list_categories(_global_store())) == []
 
     def test_error_returns_empty(self, monkeypatch):
@@ -144,5 +144,5 @@ class TestListCategories:
             async def scroll(self, **kwargs):
                 raise RuntimeError("qds no disponible")
 
-        monkeypatch.setattr("app.retriever._get_qdrant", lambda: _FakeClient())
+        monkeypatch.setattr("app.retriever.get_qdrant", lambda: _FakeClient())
         assert asyncio.run(list_categories(_global_store())) == []

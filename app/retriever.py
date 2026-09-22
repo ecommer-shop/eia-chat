@@ -2,12 +2,12 @@ import logging
 import re
 import unicodedata
 
-from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import Filter, FieldCondition, MatchAny, IsEmptyCondition, PayloadField
-from openai import AsyncAzureOpenAI
+
+from app.clients import get_azure, get_qdrant
 from app.config import settings
-from app.store_resolver import StoreConfig
+from app.models import StoreConfig
 
 logger = logging.getLogger(__name__)
 
@@ -22,34 +22,8 @@ _CATALOG_ALIASES: dict[str, list[str]] = {
     "computo": ["electronica", "tecnologia"],
 }
 
-_qdrant: AsyncQdrantClient | None = None
-_azure: AsyncAzureOpenAI | None = None
-
-
-def _get_qdrant() -> AsyncQdrantClient:
-    global _qdrant
-    if _qdrant is None:
-        _qdrant = AsyncQdrantClient(
-            url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY,
-            timeout=10.0,
-        )
-    return _qdrant
-
-
-def _get_azure() -> AsyncAzureOpenAI:
-    global _azure
-    if _azure is None:
-        _azure = AsyncAzureOpenAI(
-            api_key=settings.AZURE_OPENAI_API_KEY,
-            api_version="2024-02-01",
-            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-        )
-    return _azure
-
-
 async def _embed(text: str) -> list[float]:
-    client = _get_azure()
+    client = get_azure()
     response = await client.embeddings.create(
         input=[text],
         model=settings.AZURE_OPENAI_DEPLOYMENT,
@@ -164,7 +138,7 @@ async def search_context(
         )
 
     search_filter = Filter(must=must_conditions) if must_conditions else None
-    client = _get_qdrant()
+    client = get_qdrant()
 
     async def _query_once(vector: list[float]) -> list[dict]:
         try:
@@ -264,7 +238,7 @@ async def list_categories(store: StoreConfig, limit: int = 1000) -> list[str]:
     fetched = 0
     page_size = 100
     try:
-        client = _get_qdrant()
+        client = get_qdrant()
         while fetched < limit:
             points, offset = await client.scroll(
                 collection_name=settings.COLLECTION_NAME,

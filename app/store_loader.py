@@ -1,7 +1,7 @@
 import json
 import logging
 from pathlib import Path
-from app.store_resolver import StoreConfig
+from app.models import StoreConfig
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +18,14 @@ def load_stores() -> dict[int, StoreConfig]:
         logger.error("Error parseando stores.json: %s", e)
         return {}
     stores_raw = raw.get("stores", [])
-    inbox_map: dict[int, StoreConfig] = {}
+    account_map: dict[int, StoreConfig] = {}
     for store_def in stores_raw:
         store_name = store_def["store_name"]
+        account_id_raw = store_def.get("account_id")
+        if account_id_raw is None:
+            logger.warning("Tienda '%s' sin account_id — se omite", store_name)
+            continue
+        account_id = int(account_id_raw)
         is_global = store_def.get("is_global", False)
         audience = store_def.get("audience", "CLIENTE")
         language = store_def.get("language", "es")
@@ -29,25 +34,25 @@ def load_stores() -> dict[int, StoreConfig]:
         prompts = store_def.get("system_prompt", {})
         default_prompt = prompts.get("default", f"Eres el asistente virtual de {store_name}.")
         inbox_map_raw = store_def.get("inbox_map", {})
-        for inbox_id_str, channel_name in inbox_map_raw.items():
-            inbox_id = int(inbox_id_str)
-            prompt = prompts.get(channel_name, default_prompt)
-            inbox_map[inbox_id] = StoreConfig(
-                store_name=store_name,
-                channel_name=channel_name,
-                channel_tokens=list(channel_tokens),
-                is_global=is_global,
-                audience=audience,
-                system_prompt=prompt,
-                language=language,
-                few_shot=list(few_shot),
-            )
-        logger.info(
-            "Tienda '%s' cargada: %d inboxes, global=%s, tokens=%s",
-            store_name, len(inbox_map_raw), is_global, channel_tokens,
+        inbox_map = {int(k): v for k, v in inbox_map_raw.items()}
+        account_map[account_id] = StoreConfig(
+            store_name=store_name,
+            account_id=account_id,
+            channel_tokens=list(channel_tokens),
+            is_global=is_global,
+            audience=audience,
+            system_prompt=default_prompt,
+            language=language,
+            few_shot=list(few_shot),
+            inbox_map=inbox_map,
+            prompts=dict(prompts),
         )
-    logger.info("Total inboxes mapeados: %d", len(inbox_map))
-    return inbox_map
+        logger.info(
+            "Tienda '%s' cargada: account_id=%s, %d inboxes, global=%s, tokens=%s",
+            store_name, account_id, len(inbox_map_raw), is_global, channel_tokens,
+        )
+    logger.info("Total tiendas mapeadas: %d", len(account_map))
+    return account_map
 
 
 def list_stores_summary() -> list[dict]:
@@ -61,6 +66,7 @@ def list_stores_summary() -> list[dict]:
         inbox_map_raw = store_def.get("inbox_map", {})
         result.append({
             "store_name": store_def["store_name"],
+            "account_id": store_def.get("account_id"),
             "is_global": store_def.get("is_global", False),
             "audience": store_def.get("audience", "CLIENTE"),
             "channel_tokens": store_def.get("channel_tokens", []),

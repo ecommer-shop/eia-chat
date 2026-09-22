@@ -32,7 +32,6 @@ Los casos **solo** mencionan productos verificados en `COMPLETA` (15 puntos
 | Tienda | channel_token | Productos |
 |--------|---------------|-----------|
 | `ecommer` (global) | `[]` (ve todo) | Los 15, incluye KZ Castor Pro, Stewart Cálculo 1, Café orgánico Alem, champiñones Orellana, NARAYANA, etc. |
-| `sol-y-luna` | `sol-y-luna-token` | Panela orgánica, Café orgánico, Collar Búho, Amigurumi, Árbol de la vida, Tope de puerta, Mandalas, Separador de libros |
 | tokens sin tienda mapeada | `fungogenix-token`, `narayana-token`, `ziru-acoustics-token`, `legaltech-token`, `cos_store-token`, `phybuch-token` | Solo visibles vía ecommer global (no hay inbox configurado aún) |
 
 Documentos no-catálogo en `COMPLETA` (fundamentan los casos de
@@ -48,6 +47,7 @@ Un caso por línea en `golden_set.jsonl`:
 {
   "id": "gs_001",
   "tienda_id": "ecommer",
+  "account_id": 1,
   "inbox_id": 2,
   "canal": "whatsapp",
   "turnos": ["¿Tienen audífonos KZ Castor Pro?", "¿y en qué colores vienen?"],
@@ -60,6 +60,9 @@ Un caso por línea en `golden_set.jsonl`:
 
 | Campo | Significado |
 |-------|-------------|
+| `tienda_id` | Etiqueta legible de la tienda (informativo). |
+| `account_id` | Cuenta Chatwoot que identifica la tienda (clave del store resolver). |
+| `inbox_id` | Inbox de Chatwoot (elige canal/prompt dentro de la tienda). |
 | `turnos[]` | Se envían secuencialmente al mismo `conversation_id` (`eval-{id}`). Mide memoria (Fase 2). |
 | `debe_incluir[]` | Substrings (case-insensitive) que **todos** deben aparecer en alguna respuesta. |
 | `no_debe[]` | Substrings que **ninguna** respuesta debe contener. |
@@ -70,19 +73,22 @@ Un caso por línea en `golden_set.jsonl`:
 Un caso **pasa** si todo `debe_incluir` acierta y nada de `no_debe` aparece.
 La intención detectada solo se verifica con `--check-intent`.
 
-## Cobertura (36 casos)
+## Cobertura (20 casos)
+
+> En 2026-09 se eliminaron los 16 casos de la tienda `sol-y-luna` (ya no existe
+> en Chatwoot) y se añadió `account_id` a cada caso. Quedan los casos de
+> `ecommer` (global) y `desconocida` (fail-closed).
 
 | Área | Casos | Ejemplo |
 |------|-------|---------|
-| CATALOGO single-turn | 12 | `gs_001`–`gs_012` |
-| No inventar precio | 4 | `gs_013`–`gs_016` |
-| Multi-turno (memoria) | 5 | `gs_017`–`gs_021` |
-| Aislamiento de tienda | 3 | `gs_022`–`gs_024` |
+| CATALOGO single-turn | 6 | `gs_001`–`gs_006` |
+| No inventar precio | 2 | `gs_013`, `gs_015` |
+| Multi-turno (memoria) | 2 | `gs_017`, `gs_019` |
 | Inbox desconocido (fail-closed) | 2 | `gs_025`–`gs_026` |
 | POLITICAS / INFO_GENERAL | 4 | `gs_027`–`gs_030` |
-| Mixta catálogo + política | 2 | `gs_031`–`gs_032` |
+| Mixta catálogo + política | 1 | `gs_031` |
 | Escalada a humano | 1 | `gs_033` |
-| Conversacional | 3 | `gs_034`–`gs_036` |
+| Conversacional | 2 | `gs_034`, `gs_035` |
 
 ## Uso
 

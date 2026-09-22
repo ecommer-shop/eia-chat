@@ -1,14 +1,15 @@
 import logging
 import re
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from groq import AsyncGroq
-from pydantic import ValidationError
 
+from app.clients import get_groq, close_clients
 from app.config import settings, validate_settings
+from app.rate_limit import RateLimitMiddleware
 from app.schemas import ChatRequest, ChatResponse, AgentChatResponse
-from app.store_resolver import resolve_store, init_stores, reload_stores, get_inbox_map
+from app.store_resolver import resolve_store, init_stores, reload_stores, get_account_map
 from app.store_loader import list_stores_summary
 from app.intent_classifier import classify_intent
 from app.retriever import search_context, list_categories
@@ -24,21 +25,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        validate_settings()
+        init_stores()
+        logger.info("eia-rag gateway iniciado (collection=%s)", settings.COLLECTION_NAME)
+        yield
+    except ValueError as e:
+        logger.error("Configuración inválida: %s", e)
+        raise
+    finally:
+        await close_clients()
+        logger.info("eia-rag gateway detenido")
+
+
 app = FastAPI(
     title="EIA RAG Gateway",
     description="Unified RAG: intent classification + vector search + memory + LLM generation",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
+# Rate limiting primero (protege los endpoints costosos incluso antes de CORS).
+if settings.RATE_LIMIT_PER_MINUTE and settings.RATE_LIMIT_PER_MINUTE > 0:
+    app.add_middleware(RateLimitMiddleware, max_requests=settings.RATE_LIMIT_PER_MINUTE)
+
+# CORS: orígenes explícitos desde configuración. `allow_credentials=True` y
+# orígenes wildcard son incompatibles (los browsers lo rechazan), por eso
+# credentials solo se activan si no hay "*".
+allow_credentials = "*" not in settings.CORS_ORIGINS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-_groq_client: AsyncGroq | None = None
 
 _CATEGORIES_QUERY_RE = re.compile(r"categor[ií]as", re.IGNORECASE)
 
@@ -47,31 +72,13 @@ def _is_categories_query(query: str) -> bool:
     return bool(_CATEGORIES_QUERY_RE.search(query))
 
 
-def _get_groq() -> AsyncGroq:
-    global _groq_client
-    if _groq_client is None:
-        _groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
-    return _groq_client
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    try:
-        validate_settings()
-        init_stores()
-        logger.info("eia-rag gateway iniciado (collection=%s)", settings.COLLECTION_NAME)
-    except ValueError as e:
-        logger.error("Configuración inválida: %s", e)
-        raise
-
-
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
     query = request.query.strip()
     if not query:
         raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío.")
 
-    store = resolve_store(request.inbox_id)
+    store = resolve_store(request.account_id, request.inbox_id)
     logger.info(
         "Consulta: '%s' | tienda=%s | canal=%s | conversation=%s",
         query, store.store_name, store.channel_name, request.conversation_id,
@@ -105,7 +112,7 @@ async def chat_endpoint(request: ChatRequest):
     )
 
     try:
-        client = _get_groq()
+        client = get_groq()
         completion = await client.chat.completions.create(
             messages=messages,
             model=settings.GROQ_CHAT_MODEL,
@@ -162,6 +169,7 @@ async def agent_chat(request: ChatRequest):
         result = await run_agent(
             query=query,
             conversation_id=request.conversation_id or "",
+            account_id=request.account_id,
             inbox_id=request.inbox_id,
             user_id=request.user_id,
             channel=request.channel,
@@ -169,7 +177,7 @@ async def agent_chat(request: ChatRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    store = resolve_store(request.inbox_id)
+    store = resolve_store(request.account_id, request.inbox_id)
 
     logger.info(
         "Agente resultado: '%s' | tienda=%s (%s) | escalado=%s | tools=%s",
@@ -197,16 +205,16 @@ async def health_check() -> dict:
 
 @app.get("/stores")
 async def list_stores() -> dict:
-    loaded = get_inbox_map()
+    loaded = get_account_map()
     summary = list_stores_summary()
     return {
-        "total_inboxes": len(loaded),
+        "total_stores": len(loaded),
         "stores": summary,
-        "inbox_ids_loaded": sorted(loaded.keys()),
+        "account_ids_loaded": sorted(loaded.keys()),
     }
 
 
 @app.post("/stores/reload")
 async def reload_stores_endpoint() -> dict:
     result = reload_stores()
-    return {"status": "ok", "message": "Tiendas recargadas", "inboxes_loaded": result["loaded"]}
+    return {"status": "ok", "message": "Tiendas recargadas", "stores_loaded": result["loaded"]}
