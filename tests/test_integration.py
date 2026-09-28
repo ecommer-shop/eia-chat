@@ -1,8 +1,8 @@
 """Tests de integración del gateway (endpoints HTTP + rate limiting).
 
 Todas las dependencias externas (Groq, Qdrant, Azure, Redis) se mockean: no
-se hacen llamadas de red. Se verifica el contrato HTTP de `/chat`,
-`/agent/chat`, `/health`, `/stores` y `/stores/reload`, además del middleware
+se hacen llamadas de red. Se verifica el contrato HTTP de `/agent/chat`,
+`/health`, `/stores` y `/stores/reload`, además del middleware
 de rate limiting.
 """
 
@@ -51,23 +51,22 @@ def _fake_groq(content: str = "Respuesta de prueba") -> _FakeGroq:
 
 @pytest.fixture
 def mock_pipeline(monkeypatch):
-    """Mockea el pipeline completo: clasificador, retriever, memoria y Groq."""
+    """Mockea el pipeline del agente: run_agent y Groq."""
 
-    async def _fake_classify(query: str) -> list[str]:
-        return ["CATALOGO"]
+    async def _fake_run_agent(**kwargs):
+        from app.agent.core import AgentResult
+        return AgentResult(
+            answer="Respuesta del agente",
+            intent_detected="CATALOGO",
+            sources_used=2,
+            conversation_id=kwargs.get("conversation_id", "conv-1"),
+            escalado=False,
+            tools_used=["search_catalogo", "answer"],
+        )
 
-    async def _fake_search(query: str, store, intents: list[str], limit: int = 10) -> list[dict]:
-        return [{"score": 0.9, "payload": {"metadata": {"name": "Zapatos"}, "text": "Zapatos de prueba"}}]
-
-    async def _fake_categories(store, limit: int = 1000) -> list[str]:
-        return ["Calzado", "Ropa"]
-
-    monkeypatch.setattr("app.main.classify_intent", _fake_classify)
-    monkeypatch.setattr("app.main.search_context", _fake_search)
-    monkeypatch.setattr("app.main.list_categories", _fake_categories)
-    monkeypatch.setattr("app.main.get_history", lambda cid: [])
-    monkeypatch.setattr("app.main.save_message", lambda cid, role, content: None)
-    monkeypatch.setattr("app.main.get_groq", lambda: _fake_groq())
+    monkeypatch.setattr("app.main.run_agent", _fake_run_agent)
+    monkeypatch.setattr("app.agent.core.run_agent", _fake_run_agent)
+    monkeypatch.setattr("app.agent.tools.get_groq", lambda: _fake_groq())
     return monkeypatch
 
 
@@ -105,75 +104,13 @@ def test_stores_reload(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["stores_loaded"] > 0
-
-
-# ----------------------------------------------------------------------- chat
-
-
-def test_chat_returns_answer(client, mock_pipeline):
-    resp = client.post("/chat", json={"query": "¿Tienen zapatos?", "account_id": 1, "inbox_id": 2})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["answer"] == "Respuesta de prueba"
-    assert body["intent_detected"] == "CATALOGO"
-    assert body["sources_used"] == 1
-    assert body["conversation_id"]
-
-
-def test_chat_empty_query_returns_400(client, mock_pipeline):
-    resp = client.post("/chat", json={"query": "   "})
-    assert resp.status_code == 400
-
-
-def test_chat_accepts_legacy_message_key(client, mock_pipeline):
-    resp = client.post("/chat", json={"message": "¿Envían a Bogotá?", "account_id": 1, "inbox_id": 2})
-    assert resp.status_code == 200
-    assert resp.json()["answer"] == "Respuesta de prueba"
-
-
-def test_chat_groq_error_falls_back(client, mock_pipeline):
-    class _BrokenGroq:
-        class _BrokenCompletions:
-            async def create(self, **_: Any):
-                raise RuntimeError("Groq caído")
-
-        chat = _BrokenCompletions()
-
-    mock_pipeline.setattr("app.main.get_groq", lambda: _BrokenGroq())
-    resp = client.post("/chat", json={"query": "¿Tienen zapatos?", "account_id": 1, "inbox_id": 2})
-    assert resp.status_code == 200
-    assert "problemas técnicos" in resp.json()["answer"]
-
-
-def test_chat_empty_groq_content_falls_back(client, mock_pipeline):
-    def _empty_groq():
-        completion = _FakeCompletion(content="", finish_reason="length")
-        return _FakeGroq(completion)
-
-    mock_pipeline.setattr("app.main.get_groq", _empty_groq)
-    resp = client.post("/chat", json={"query": "¿Tienen zapatos?", "account_id": 1, "inbox_id": 2})
-    assert resp.status_code == 200
-    assert "no pude generar" in resp.json()["answer"]
+    assert body["loaded"] > 0
 
 
 # ---------------------------------------------------------------- agent/chat
 
 
-def test_agent_chat_returns_result(client, mock_pipeline, monkeypatch):
-    from app.agent.core import AgentResult
-
-    async def _fake_run_agent(**_: Any):
-        return AgentResult(
-            answer="Respuesta del agente",
-            intent_detected="CATALOGO",
-            sources_used=2,
-            conversation_id="conv-1",
-            escalado=False,
-            tools_used=["search_catalogo", "answer"],
-        )
-
-    monkeypatch.setattr("app.main.run_agent", _fake_run_agent)
+def test_agent_chat_returns_result(client, mock_pipeline):
     resp = client.post("/agent/chat", json={"query": "¿Qué hay en oferta?", "account_id": 1, "inbox_id": 2})
     assert resp.status_code == 200
     body = resp.json()
@@ -196,6 +133,7 @@ def test_agent_chat_escalated(client, mock_pipeline, monkeypatch):
         )
 
     monkeypatch.setattr("app.main.run_agent", _fake_escalate)
+    monkeypatch.setattr("app.agent.core.run_agent", _fake_escalate)
     resp = client.post("/agent/chat", json={"query": "Hola", "account_id": 999, "inbox_id": 999, "user_id": 5})
     assert resp.status_code == 200
     assert resp.json()["escalado"] is True

@@ -135,11 +135,13 @@ class TestToolRegistry:
 
 class TestStoreMappingFlag:
     def test_mapped_store_is_mapped(self):
-        assert resolve_store(1, 2).is_mapped is True
-        assert resolve_store(5, 13).is_mapped is True
+        import asyncio
+        assert asyncio.run(resolve_store(1, 2)).is_mapped is True
+        assert asyncio.run(resolve_store(5, 13)).is_mapped is True
 
     def test_unknown_store_not_mapped(self):
-        assert resolve_store(99).is_mapped is False
+        import asyncio
+        assert asyncio.run(resolve_store(99)).is_mapped is False
 
 
 class TestEscalate:

@@ -130,7 +130,7 @@ async def run_agent(
         raise ValueError("El mensaje no puede estar vacío.")
 
     conversation_id = conversation_id or _new_conversation_id()
-    store = resolve_store(account_id, inbox_id)
+    store = await resolve_store(account_id, inbox_id)
 
     trace_ctx = trace_attributes(
         trace_name=f"agent-chat",

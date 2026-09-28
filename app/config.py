@@ -47,6 +47,14 @@ class Settings:
     # --- Gateway ---
     PORT: int = int(os.getenv("PORT", "8080"))
 
+    # --- PostgreSQL Vendure (read-only) ---
+    PG_HOST: str = os.getenv("DB_HOST", "")
+    PG_PORT: int = int(os.getenv("DB_PORT", "5432"))
+    PG_DB: str = os.getenv("DB_NAME", "")
+    PG_USER: str = os.getenv("DB_USERNAME", "")
+    PG_PASSWORD: str = os.getenv("DB_PASSWORD", "")
+    PG_SSL: str = os.getenv("DB_SSL", "require")
+
 
 settings = Settings()
 
