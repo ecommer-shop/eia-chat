@@ -2,7 +2,7 @@ import re
 import logging
 import unicodedata
 from langfuse import observe
-from app.clients import get_groq
+from app.clients import get_llm, pick_model
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -106,20 +106,32 @@ def _keyword_fallback(query: str) -> list[str]:
 
 
 @observe(as_type="generation", name="classify_intent")
-async def classify_intent(query: str) -> list[str]:
+async def classify_intent(query: str, vk: str | None = None) -> list[str]:
+    """Clasifica la intención con la VK de Bifrost de la tienda.
+
+    El modelo siempre es el más pequeño que el plan permite (Phi-4-mini por
+    defecto). Sin VK no hay LLM: se usa solo el fallback por keywords.
+    """
     logger.info("Clasificando intención: '%s'", query)
+    if not vk:
+        logger.warning("Sin VK Bifrost: clasificación solo por keywords")
+        return _keyword_fallback(query) or ["CONVERSACIONAL"]
     try:
-        client = get_groq()
+        model = await pick_model(
+            vk,
+            [settings.BIFROST_ROUTER_MODEL, settings.BIFROST_CHAT_MODEL_FALLBACK],
+        )
+        client = get_llm(vk)
         completion = await client.chat.completions.create(
             messages=[
                 {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
                 {"role": "user", "content": query},
             ],
-            model=settings.GROQ_ROUTER_MODEL,
+            model=model,
             temperature=0.0,
             max_tokens=256,
         )
-        raw = completion.choices[0].message.content.strip().upper()
+        raw = (completion.choices[0].message.content or "").strip().upper()
         detected = _parse_intent_output(raw)
         fallback = _keyword_fallback(query)
 

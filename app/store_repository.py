@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 from cachetools import TTLCache
+from app.config import settings
 from app.models import StoreConfig
 from app.db import acquire_db
 
@@ -20,6 +21,8 @@ _TEST_STORES = {
         "channel_token": "",
         "seller_name": "Ecommer",
         "language": "es",
+        "bifrost_vk": "test-vk-ecommer",
+        "bifrost_plan": "ecommer",
     },
     5: {
         "store_name": "ziru-acoustics",
@@ -27,8 +30,25 @@ _TEST_STORES = {
         "channel_token": "ziru-acoustics-token",
         "seller_name": "Ziru Acoustics",
         "language": "es",
+        "bifrost_vk": "test-vk-seller",
+        "bifrost_plan": "free",
     },
 }
+
+# VK de Bifrost del vendedor: se resuelve en la MISMA consulta para que una
+# rotación de clave o un cambio de plan se reflejen en el siguiente cache miss
+# (TTL 30s) sin reiniciar nada. Solo claves activas y no expiradas.
+_BIFROST_KEY_JOIN = """
+    LEFT JOIN LATERAL (
+        SELECT bk.value AS vk, bk.plan_name AS plan
+        FROM public.bifrost_key bk
+        WHERE bk.administrator_id = ca.administrator_id
+          AND bk.is_active
+          AND (bk.expires_at IS NULL OR bk.expires_at > now())
+        ORDER BY bk."updatedAt" DESC
+        LIMIT 1
+    ) bk ON true
+"""
 
 # Query SQL validada para una tienda
 STORE_QUERY = """
@@ -37,7 +57,9 @@ STORE_QUERY = """
         ch.code as store_name,
         ch.token as channel_token,
         s.name as seller_name,
-        ch."defaultLanguageCode" as language
+        ch."defaultLanguageCode" as language,
+        bk.vk as bifrost_vk,
+        bk.plan as bifrost_plan
     FROM public.chatwoot_account ca
     JOIN public.administrator a ON a.id = ca.administrator_id
     JOIN public."user" u ON u.id = a."userId"
@@ -46,11 +68,12 @@ STORE_QUERY = """
     JOIN public.role_channels_channel rcc ON rcc."roleId" = r.id
     JOIN public.channel ch ON ch.id = rcc."channelId" AND ch."sellerId" IS NOT NULL
     JOIN public.seller s ON s.id = ch."sellerId"
+    {bifrost_join}
     WHERE ca.chatwoot_account_id = $1
       AND r.code LIKE '%-admin'
       AND ca.status = 'active'
     LIMIT 1
-"""
+""".format(bifrost_join=_BIFROST_KEY_JOIN)
 
 # Query para listar todas las tiendas activas
 ALL_STORES_QUERY = """
@@ -59,7 +82,9 @@ ALL_STORES_QUERY = """
         ch.code as store_name,
         ch.token as channel_token,
         s.name as seller_name,
-        ch."defaultLanguageCode" as language
+        ch."defaultLanguageCode" as language,
+        bk.vk as bifrost_vk,
+        bk.plan as bifrost_plan
     FROM public.chatwoot_account ca
     JOIN public.administrator a ON a.id = ca.administrator_id
     JOIN public."user" u ON u.id = a."userId"
@@ -68,9 +93,10 @@ ALL_STORES_QUERY = """
     JOIN public.role_channels_channel rcc ON rcc."roleId" = r.id
     JOIN public.channel ch ON ch.id = rcc."channelId" AND ch."sellerId" IS NOT NULL
     JOIN public.seller s ON s.id = ch."sellerId"
+    {bifrost_join}
     WHERE r.code LIKE '%-admin'
       AND ca.status = 'active'
-"""
+""".format(bifrost_join=_BIFROST_KEY_JOIN)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -90,9 +116,23 @@ def _load_prompt_json(store_name: str) -> dict:
     }
 
 
+def _resolve_vk(account_id: int, db_vk: str | None, db_plan: str | None) -> tuple[str | None, str]:
+    """VK efectiva de la tienda.
+
+    - chatwoot_account_id == 1 (Ecommer): VK de plataforma desde `.env`,
+      jamás desde la BD (regla: esa llave es exclusiva de la cuenta 1).
+    - resto: VK activa de `bifrost_key` traída por la query (puede ser None
+      si la tienda no tiene clave → error 503 en el endpoint).
+    """
+    if account_id == 1:
+        return settings.BIFROST_VK_ECOMMER, "ecommer"
+    return db_vk, (db_plan or "")
+
+
 def _row_to_store_config(row) -> StoreConfig:
     """Convierte row de BD a StoreConfig dataclass."""
     prompt_data = _load_prompt_json(row["store_name"])
+    vk, plan = _resolve_vk(row["chatwoot_account_id"], row["bifrost_vk"], row["bifrost_plan"])
     return StoreConfig(
         store_name=row["store_name"],
         account_id=row["chatwoot_account_id"],
@@ -104,6 +144,8 @@ def _row_to_store_config(row) -> StoreConfig:
         inbox_map={},
         prompts={"default": prompt_data.get("system_prompt", "")},
         few_shot=prompt_data.get("few_shot_examples", []),
+        bifrost_vk=vk,
+        bifrost_plan=plan,
     )
 
 
@@ -125,6 +167,8 @@ async def get_store_by_account_id(account_id: int) -> StoreConfig | None:
                 inbox_map={},
                 prompts={"default": prompt_data.get("system_prompt", "")},
                 few_shot=prompt_data.get("few_shot_examples", []),
+                bifrost_vk=mock.get("bifrost_vk"),
+                bifrost_plan=mock.get("bifrost_plan", ""),
             )
         return None
     

@@ -13,16 +13,15 @@ from typing import Awaitable, Callable
 
 from langfuse import get_client, observe
 
-from app.clients import get_groq
+from app.clients import get_llm, invalidate_allowed_models, pick_model
 from app.config import settings
 from app.grounding import apply_grounding
 from app.llm_generator import build_prompt
 from app.memory import get_history
 from app.models import StoreConfig
-from app.observability import usage_details_from_groq
+from app.observability import usage_details_from_completion
 from app.renderer import annotate_products, render_product_footer
 from app.retriever import search_context, list_categories
-from app.models import StoreConfig
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +99,43 @@ def _history_mentions_products(history: list[dict]) -> bool:
     return False
 
 
+async def _create_completion(vk: str, model: str, messages: list[dict]):
+    """Llamada cruda a Bifrost (OpenAI-compat) con la VK de la tienda."""
+    return await get_llm(vk).chat.completions.create(
+        messages=messages,
+        model=model,
+        temperature=0.2,
+        max_tokens=1024,
+    )
+
+
+async def _create_with_model_fallback(
+    vk: str, messages: list[dict], model: str, preference: list[str]
+) -> tuple[object, str]:
+    """Crea la completación; ante 403 (modelo no permitido por el plan)
+    refresca el descubrimiento de modelos de esa VK y reintenta UNA vez con
+    el mejor modelo disponible. Automático, sin intervención manual.
+
+    Devuelve `(completion, modelo_realmente_usado)`.
+    """
+    try:
+        return await _create_completion(vk, model, messages), model
+    except Exception as e:  # noqa: BLE001
+        if getattr(e, "status_code", None) != 403:
+            raise
+        invalidate_allowed_models(vk)
+        retry_model = await pick_model(vk, preference)
+        if retry_model == model:
+            retry_model = settings.BIFROST_CHAT_MODEL_FALLBACK
+        if retry_model == model:
+            raise
+        logger.warning(
+            "Modelo '%s' bloqueado para la VK (%s caracteres); reintentando con '%s'",
+            model, len(vk or ""), retry_model,
+        )
+        return await _create_completion(vk, retry_model, messages), retry_model
+
+
 @observe(as_type="generation")
 async def answer(
     query: str,
@@ -108,9 +144,11 @@ async def answer(
     intent: str,
     history: list[dict],
 ) -> str:
-    """Herramienta terminal: genera la respuesta final con Groq.
+    """Herramienta terminal: genera la respuesta final con Bifrost.
 
-    Replica los fallbacks de `/chat`: contenido vacío y errores de Groq
+    El modelo depende del plan de la tienda: se prefiere el más grande que la
+    VK permite (Phi-4) y, si el plan no lo tiene (free/tienda), se usa el
+    mini. Replica los fallbacks de siempre: contenido vacío y errores
     devuelven mensajes cordiales sin romper el flujo. Trazada como una
     generación (LLM) para capturar latencia y consumo de tokens.
     """
@@ -124,20 +162,20 @@ async def answer(
         nocontext_guard=not context_items and not has_prior_products,
         few_shot=store.few_shot,
     )
+    vk = store.bifrost_vk
+    preference = [settings.BIFROST_CHAT_MODEL, settings.BIFROST_CHAT_MODEL_FALLBACK]
     client = get_client()
     try:
+        model = await pick_model(vk, preference)
         observation = client.start_as_current_observation(
-            name="groq_chat",
+            name="bifrost_chat",
             as_type="generation",
-            model=settings.GROQ_CHAT_MODEL,
+            model=model,
             input={"messages": messages},
         )
         with observation as generation:
-            completion = await get_groq().chat.completions.create(
-                messages=messages,
-                model=settings.GROQ_CHAT_MODEL,
-                temperature=0.2,
-                max_tokens=1024,
+            completion, model = await _create_with_model_fallback(
+                vk, messages, model, preference
             )
             raw = completion.choices[0].message.content or ""
             text = raw.encode("utf-8", errors="replace").decode("utf-8")
@@ -153,8 +191,9 @@ async def answer(
                 added_links = [p.url for p in mentioned]
             generation.update(
                 output=text,
-                usage_details=usage_details_from_groq(completion),
+                usage_details=usage_details_from_completion(completion),
                 metadata={
+                    "model_used": model,
                     "finish_reason": completion.choices[0].finish_reason,
                     "grounded": not grounding_issues,
                     "grounding_issues": grounding_issues,
@@ -163,7 +202,8 @@ async def answer(
             )
         if not text:
             logger.warning(
-                "Groq devolvió contenido vacío",
+                "Bifrost devolvió contenido vacío (plan=%s)",
+                store.bifrost_plan or "sin-plan",
             )
             return "Lo siento, no pude generar una respuesta en este momento. ¿Podrías reformular tu pregunta?"
         return text

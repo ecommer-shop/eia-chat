@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.clients import close_clients
 from app.config import settings, validate_settings
+from app.exceptions import StoreWithoutBifrostKeyError
 from app.rate_limit import RateLimitMiddleware
 from app.schemas import ChatRequest, AgentChatResponse
 from app.store_resolver import resolve_store, reload_stores
@@ -76,6 +77,11 @@ async def agent_chat(request: ChatRequest):
             user_id=request.user_id,
             channel=request.channel,
         )
+    except StoreWithoutBifrostKeyError as e:
+        # Sin VK no hay LLM: es un error de creación/renovación de claves.
+        # eia-bot lo traduce a un mensaje amigable para el cliente.
+        logger.error("Tienda sin clave Bifrost: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

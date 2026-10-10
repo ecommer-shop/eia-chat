@@ -1,4 +1,11 @@
 """Configuración global de pytest y fixtures compartidos."""
+import os
+
+# Debe fijarse ANTES de importar cualquier módulo de `app`: los flags de modo
+# test (db, repository, clients) se leen al importar. Mantiene los tests
+# offline sin depender del shell.
+os.environ.setdefault("EIA_TEST_MODE", "1")
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from app.models import StoreConfig
@@ -62,6 +69,8 @@ def mock_store_resolver(monkeypatch):
                 ],
                 inbox_map={},
                 prompts={"default": "Eres Simetria, el asistente virtual de Ecommer SAS."},
+                bifrost_vk="test-vk-ecommer",
+                bifrost_plan="ecommer",
             ),
             5: StoreConfig(
                 store_name="ziru-acoustics",
@@ -74,6 +83,8 @@ def mock_store_resolver(monkeypatch):
                 few_shot=[],
                 inbox_map={13: "shop"},
                 prompts={"default": "Eres el asistente virtual de Ziru Acoustics."},
+                bifrost_vk="test-vk-seller",
+                bifrost_plan="free",
             ),
         }
         

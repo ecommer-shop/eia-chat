@@ -29,6 +29,8 @@ _TEST_STORES = {
         ],
         inbox_map={},
         prompts={"default": "Eres Simetria, el asistente virtual de Ecommer SAS."},
+        bifrost_vk="test-vk-ecommer",
+        bifrost_plan="ecommer",
     ),
     5: StoreConfig(
         store_name="ziru-acoustics",
@@ -41,6 +43,8 @@ _TEST_STORES = {
         few_shot=[],
         inbox_map={13: "shop"},
         prompts={"default": "Eres el asistente virtual de Ziru Acoustics."},
+        bifrost_vk="test-vk-seller",
+        bifrost_plan="free",
     ),
 }
 
@@ -98,8 +102,11 @@ def set_account_map(new_map: dict[int, StoreConfig]) -> None:
 
 
 async def reload_stores() -> dict[str, int]:
-    """Invalida cache completo (POST /stores/reload)."""
+    """Invalida cache de tiendas y de modelos Bifrost (POST /stores/reload)."""
+    from app.clients import reset_llm_model_cache
+
     repo_invalidate()
+    reset_llm_model_cache()
     from app.store_repository import get_all_stores
     stores = await get_all_stores()
     return {"loaded": len(stores)}

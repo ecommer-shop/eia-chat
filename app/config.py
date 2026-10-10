@@ -15,10 +15,32 @@ class Settings:
     AZURE_OPENAI_ENDPOINT: str | None = os.getenv("AZURE_OPENAI_ENDPOINT")
     AZURE_OPENAI_DEPLOYMENT: str = os.getenv("AZURE_OPENAI_DEPLOYMENT", "text-embedding-3-small")
 
-    # --- Groq ---
+    # --- Groq (solo eval offline; los LLM de producción van por Bifrost) ---
     GROQ_API_KEY: str | None = os.getenv("GROQ_API_KEY")
     GROQ_ROUTER_MODEL: str = os.getenv("GROQ_ROUTER_MODEL")
     GROQ_CHAT_MODEL: str = os.getenv("GROQ_CHAT_MODEL")
+
+    # --- Bifrost (pasarela LLM propia, OpenAI-compatible) ---
+    BIFROST_BASE_URL: str = os.getenv(
+        "BIFROST_BASE_URL", "https://bifrost-stage.up.railway.app"
+    )
+    # VK de la plataforma Ecommer: SOLO para chatwoot account_id == 1.
+    # Se acepta la variante exacta BIFROST_VK_Ecommer (case-sensitive en Linux).
+    BIFROST_VK_ECOMMER: str | None = (
+        os.getenv("BIFROST_VK_ECOMMER") or os.getenv("BIFROST_VK_Ecommer")
+    )
+    # Preferencias de modelo: la primera que la VK del plan permite es la usada.
+    BIFROST_ROUTER_MODEL: str = os.getenv(
+        "BIFROST_ROUTER_MODEL", "azure/Phi-4-mini-instruct"
+    )
+    BIFROST_CHAT_MODEL: str = os.getenv("BIFROST_CHAT_MODEL", "azure/Phi-4")
+    # Planes sin Phi-4 (free/tienda) usan el mini para respuesta y retry de 403.
+    BIFROST_CHAT_MODEL_FALLBACK: str = os.getenv(
+        "BIFROST_CHAT_MODEL_FALLBACK", "azure/Phi-4-mini-instruct"
+    )
+    BIFROST_TIMEOUT: float = float(os.getenv("BIFROST_TIMEOUT", "60"))
+    # TTL del descubrimiento de modelos por VK (GET /v1/models).
+    BIFROST_MODELS_CACHE_TTL: int = int(os.getenv("BIFROST_MODELS_CACHE_TTL", "30"))
 
     # --- Redis/Valkey (memory) ---
     REDIS_URL: str | None = os.getenv("REDIS_URL") or os.getenv("VALKEY_URL")
@@ -65,7 +87,8 @@ def validate_settings() -> None:
         "QDRANT_API_KEY",
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_ENDPOINT",
-        "GROQ_API_KEY",
+        "BIFROST_BASE_URL",
+        "BIFROST_VK_ECOMMER",
     ]
     missing = [name for name in required if not getattr(settings, name, None)]
     if missing:

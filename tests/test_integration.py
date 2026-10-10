@@ -66,7 +66,7 @@ def mock_pipeline(monkeypatch):
 
     monkeypatch.setattr("app.main.run_agent", _fake_run_agent)
     monkeypatch.setattr("app.agent.core.run_agent", _fake_run_agent)
-    monkeypatch.setattr("app.agent.tools.get_groq", lambda: _fake_groq())
+    monkeypatch.setattr("app.agent.tools.get_llm", lambda *a, **k: _fake_groq())
     return monkeypatch
 
 
