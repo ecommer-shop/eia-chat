@@ -106,6 +106,14 @@ class TestGetLLM:
         assert c1 is not c3
         clients._llm_clients.clear()
 
+    def test_max_retries_acotado(self):
+        # El default del SDK (2) apila intentos de 60s: un solo LLM call podía
+        # tardar minutos y eia-bot cortaba a los 60s (usuario sin respuesta).
+        clients._llm_clients.clear()
+        client = clients.get_llm("vk-retries")
+        assert client.max_retries == 1
+        clients._llm_clients.clear()
+
 
 # ---------------------------------------------------------------------------
 # Retry automático ante 403 (model_blocked)

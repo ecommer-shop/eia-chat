@@ -59,6 +59,10 @@ def get_llm(vk: str | None) -> AsyncOpenAI:
             api_key=vk,
             default_headers={"x-bf-vk": vk},
             timeout=settings.BIFROST_TIMEOUT,
+            # El default del SDK (2) apila intentos de 60s y hace que un solo
+            # mensaje tarde minutos; eia-bot corta a los 60s y el usuario
+            # no recibe nada. Un reintento basta.
+            max_retries=1,
         )
         _llm_clients[vk] = client
     return client

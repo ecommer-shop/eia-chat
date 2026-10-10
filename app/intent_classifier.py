@@ -122,7 +122,9 @@ async def classify_intent(query: str, vk: str | None = None) -> list[str]:
             [settings.BIFROST_ROUTER_MODEL, settings.BIFROST_CHAT_MODEL_FALLBACK],
         )
         client = get_llm(vk)
-        completion = await client.chat.completions.create(
+        completion = await client.with_options(
+            timeout=settings.BIFROST_ROUTER_TIMEOUT
+        ).chat.completions.create(
             messages=[
                 {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
                 {"role": "user", "content": query},

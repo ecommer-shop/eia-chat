@@ -39,6 +39,10 @@ class Settings:
         "BIFROST_CHAT_MODEL_FALLBACK", "azure/Phi-4-mini-instruct"
     )
     BIFROST_TIMEOUT: float = float(os.getenv("BIFROST_TIMEOUT", "60"))
+    # El router (Phi-4-mini) debe fallar rápido al keywords: si se toma su
+    # presupuesto completo, la respuesta final ya no cabe en el timeout de
+    # eia-bot (60s) y el usuario queda sin respuesta.
+    BIFROST_ROUTER_TIMEOUT: float = float(os.getenv("BIFROST_ROUTER_TIMEOUT", "25"))
     # TTL del descubrimiento de modelos por VK (GET /v1/models).
     BIFROST_MODELS_CACHE_TTL: int = int(os.getenv("BIFROST_MODELS_CACHE_TTL", "30"))
 
