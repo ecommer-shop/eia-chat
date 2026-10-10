@@ -7,6 +7,7 @@ una tienda sin clave y que la VK nunca aparezca en `repr`.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +17,9 @@ from app.agent import tools
 from app.exceptions import StoreWithoutBifrostKeyError
 from app.intent_classifier import classify_intent
 from app.models import StoreConfig
+
+# Capturado al importar (antes de que conftest parchee el mock autouse).
+_real_get_store_by_account_id = store_repository.get_store_by_account_id
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +262,64 @@ class TestSinVK503:
         detail = resp.json()["detail"]
         assert "clave Bifrost" in detail
         assert "tienda-sin-vk" in detail
+
+
+# ---------------------------------------------------------------------------
+# Ecommer global (account_id 1): no existe en la BD -> override local
+# ---------------------------------------------------------------------------
+
+class _FakeConn:
+    async def fetchrow(self, *args, **kwargs):
+        return None
+
+
+@asynccontextmanager
+async def _fake_acquire_db():
+    yield _FakeConn()
+
+
+class TestEcommerGlobalSinFilaBD:
+    """La cuenta 1 (ecommer, la plataforma) no está en chatwoot_account.
+
+    Debe construirse localmente desde app/prompts/ecommer.json + VK del env;
+    sin esto respondía el mensaje de escalada "no tengo informacion configurada".
+    """
+
+    def _patch(self, monkeypatch):
+        from app import store_repository
+        from app import store_resolver
+
+        # conftest instala mocks autouse: hay que forzar las funciones REALES
+        # (capturadas al importar el módulo) para probar el camino de verdad.
+        monkeypatch.setattr(store_repository, "_TEST_MODE", False)
+        monkeypatch.setattr(store_repository, "acquire_db", _fake_acquire_db)
+        monkeypatch.setattr(store_repository, "get_store_by_account_id", _real_get_store_by_account_id)
+        monkeypatch.setattr(store_resolver, "_TEST_MODE", False)
+        monkeypatch.setattr(store_resolver, "get_store_by_account_id", _real_get_store_by_account_id)
+        store_repository.invalidate_cache()
+        return store_repository, store_resolver
+
+    def test_get_store_cuenta_1_construye_ecommer(self, monkeypatch):
+        repo, _ = self._patch(monkeypatch)
+        store = asyncio.run(repo.get_store_by_account_id(1))
+        assert store is not None
+        assert store.store_name == "ecommer"
+        assert store.is_global is True
+        assert store.channel_tokens == []
+        assert store.bifrost_plan == "ecommer"
+        assert store.bifrost_vk  # VK del .env (no vacía)
+
+    def test_resolve_store_cuenta_1_no_escala(self, monkeypatch):
+        _, resolver = self._patch(monkeypatch)
+        store = asyncio.run(resolver.resolve_store(1, 2))
+        assert store.store_name == "ecommer"
+        assert store.is_mapped is True
+        assert "informacion configurada" not in (store.system_prompt or "")
+        assert "Simetria" in store.system_prompt
+
+    def test_otra_cuenta_sin_fila_sigue_devolviendo_none(self, monkeypatch):
+        repo, _ = self._patch(monkeypatch)
+        assert asyncio.run(repo.get_store_by_account_id(999)) is None
 
 
 # ---------------------------------------------------------------------------

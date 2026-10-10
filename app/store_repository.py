@@ -129,6 +129,32 @@ def _resolve_vk(account_id: int, db_vk: str | None, db_plan: str | None) -> tupl
     return db_vk, (db_plan or "")
 
 
+def _ecommer_global_store() -> StoreConfig:
+    """Tienda global ecommer (account_id 1).
+
+    Ecommer es la plataforma (tienda de tiendas) y NO existe en
+    `chatwoot_account` de Vendure — su fila solo vive en Bifrost. Se construye
+    localmente desde `app/prompts/ecommer.json` + `BIFROST_VK_ECOMMER`, con
+    `channel_tokens=[]` e `is_global=True` (ve todo el catálogo). Sin esto la
+    cuenta 1 caía al fallback "no mapeada" y respondía el mensaje de escalada.
+    """
+    prompt_data = _load_prompt_json("ecommer")
+    return StoreConfig(
+        store_name="ecommer",
+        account_id=1,
+        channel_tokens=[],
+        is_global=prompt_data.get("is_global", True),
+        audience=prompt_data.get("audience", "CLIENTE"),
+        language=prompt_data.get("language", "es"),
+        system_prompt=prompt_data.get("system_prompt", ""),
+        inbox_map={},
+        prompts={"default": prompt_data.get("system_prompt", "")},
+        few_shot=prompt_data.get("few_shot_examples", []),
+        bifrost_vk=settings.BIFROST_VK_ECOMMER,
+        bifrost_plan="ecommer",
+    )
+
+
 def _row_to_store_config(row) -> StoreConfig:
     """Convierte row de BD a StoreConfig dataclass."""
     prompt_data = _load_prompt_json(row["store_name"])
@@ -181,6 +207,12 @@ async def get_store_by_account_id(account_id: int) -> StoreConfig | None:
         row = await conn.fetchrow(STORE_QUERY, account_id)
 
     if not row:
+        # Ecommer (cuenta 1) no está en la BD: es la plataforma. Se construye
+        # localmente con su prompt + VK del .env (ver _ecommer_global_store).
+        if account_id == 1:
+            store = _ecommer_global_store()
+            _store_cache[account_id] = store
+            return store
         return None
 
     # 3. Construir StoreConfig
