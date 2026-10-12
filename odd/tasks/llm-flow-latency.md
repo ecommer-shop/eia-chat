@@ -40,7 +40,7 @@ The current flow performs serial classification, optional retrieval, generation,
 - T3 completed: final independent command `./.venv/bin/pytest -q` — 142 passed, 1 existing Starlette/httpx deprecation warning. Targeted ASGI timing/integration tests also passed (12 passed). The classifier-specific timing test exercises mocked model selection and completion and checks correlated safe fields.
 - User authorized local installation of `asyncpg==0.32.0` and `cachetools==7.2.1` into `.venv`; `pyproject.toml` and `uv.lock` are unchanged.
 - Native risk assess was attempted but the review facade rejected the supplied `intendedUntracked` field as unsupported for ASSESS; no native review outcome or receipt is claimed.
-- The user has explicitly authorized a commit on `feature/test`; commit identity will be recorded after creation.
+- Feature implementation commit: `4ec00f7` (`feat(observability): instrument chat flow latency`), created on `feature/test` after explicit user authorization.
 - Authored diff forecast is 704 lines, above the 400-line review budget. ODD `ask-on-risk` resolved to `feature-branch-chain`; no PR/tracker creation is authorized by this request. Logical future slices: (1) request correlation and ASGI end-to-end timing; (2) per-stage model, retrieval, and memory diagnostics with operator docs.
 
 ## Next step
