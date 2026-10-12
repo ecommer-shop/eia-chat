@@ -70,8 +70,18 @@ def mock_pipeline(monkeypatch):
     return monkeypatch
 
 
-@pytest.fixture(scope="module")
-def client():
+@pytest.fixture
+def client(monkeypatch):
+    """Keep endpoint tests independent of deployment credentials and DB."""
+    from app import main
+
+    async def _noop():
+        pass
+
+    monkeypatch.setattr(main, "validate_settings", lambda: None)
+    monkeypatch.setattr(main, "init_db_pool", _noop)
+    monkeypatch.setattr(main, "close_db_pool", _noop)
+    monkeypatch.setattr(main, "close_clients", _noop)
     with TestClient(app) as c:
         yield c
 

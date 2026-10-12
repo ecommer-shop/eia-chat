@@ -27,7 +27,7 @@ from app.agent import tools
 from app.exceptions import StoreWithoutBifrostKeyError
 from app.intent_classifier import classify_intent
 from app.memory import save_message
-from app.observability import trace_attributes
+from app.observability import timed_stage, trace_attributes
 from app.store_resolver import resolve_store
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,11 @@ def _new_conversation_id() -> str:
 
 def _is_categories_query(query: str) -> bool:
     return bool(_CATEGORIES_QUERY_RE.search(query))
+
+
+def _save_message_timed(conversation_id: str, role: str, content: str) -> None:
+    with timed_stage("memory_write", operation=role):
+        save_message(conversation_id, role, content)
 
 
 async def _collect_context(
@@ -132,7 +137,8 @@ async def run_agent(
         raise ValueError("El mensaje no puede estar vacío.")
 
     conversation_id = conversation_id or _new_conversation_id()
-    store = await resolve_store(account_id, inbox_id)
+    with timed_stage("store_resolution"):
+        store = await resolve_store(account_id, inbox_id)
 
     trace_ctx = trace_attributes(
         trace_name=f"agent-chat",
@@ -155,7 +161,8 @@ async def run_agent(
             # un error de creación de claves (no se usa la VK de otra tienda).
             raise StoreWithoutBifrostKeyError(account_id, store.store_name)
 
-        intents = await classify_intent(query, vk=store.bifrost_vk)
+        with timed_stage("intent_classification", model_role="classifier"):
+            intents = await classify_intent(query, vk=store.bifrost_vk)
         intent_str = ", ".join(intents)
         logger.info(
             "Agente: '%s' | tienda=%s (%s) | intents=%s",
@@ -172,11 +179,13 @@ async def run_agent(
                 tools_used=["escalate"],
                 conversation_id=conversation_id,
             )
-            save_message(conversation_id, "user", query)
-            save_message(conversation_id, "assistant", answer)
+            _save_message_timed(conversation_id, "user", query)
+            _save_message_timed(conversation_id, "assistant", answer)
             return result
 
-        history = await tools.get_memory(conversation_id)
+        with timed_stage("memory_read") as memory_timing:
+            history = await tools.get_memory(conversation_id)
+            memory_timing["result_count"] = len(history)
         tools_used: list[str] = ["get_memory"]
 
         if _is_trivial(query):
@@ -192,13 +201,17 @@ async def run_agent(
         if intents == ["CONVERSACIONAL"]:
             context_items: list[dict] = []
         else:
-            context_items, search_used = await _collect_context(query, store, intents)
+            with timed_stage("context_retrieval") as retrieval_timing:
+                context_items, search_used = await _collect_context(query, store, intents)
+                retrieval_timing["result_count"] = len(context_items)
             tools_used.extend(search_used)
 
             if not context_items:
                 prev_query = _last_user_query(history)
                 if prev_query and prev_query != query:
-                    rescued, rescue_used = await _collect_context(prev_query, store, intents)
+                    with timed_stage("context_retrieval") as rescue_timing:
+                        rescued, rescue_used = await _collect_context(prev_query, store, intents)
+                        rescue_timing["result_count"] = len(rescued)
                     if rescued:
                         context_items = rescued
                         tools_used.extend(rescue_used)
@@ -206,8 +219,8 @@ async def run_agent(
         answer = await tools.answer(query, store, context_items, intent_str, history)
         tools_used.append("answer")
 
-        save_message(conversation_id, "user", query)
-        save_message(conversation_id, "assistant", answer)
+        _save_message_timed(conversation_id, "user", query)
+        _save_message_timed(conversation_id, "assistant", answer)
 
         return AgentResult(
             answer=answer,

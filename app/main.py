@@ -13,6 +13,7 @@ from app.store_resolver import resolve_store, reload_stores
 from app.store_repository import get_all_stores
 from app.agent.core import run_agent
 from app.db import init_db_pool, close_db_pool
+from app.observability import RequestTimingMiddleware, timed_stage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,7 +67,8 @@ async def agent_chat(request: ChatRequest):
     """Fase 3/6 — Endpoint del agente conversacional (a mano, sin framework)."""
     query = request.query.strip()
     if not query:
-        raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío.")
+        with timed_stage("response_handling"):
+            raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío.")
 
     try:
         result = await run_agent(
@@ -81,25 +83,28 @@ async def agent_chat(request: ChatRequest):
         # Sin VK no hay LLM: es un error de creación/renovación de claves.
         # eia-bot lo traduce a un mensaje amigable para el cliente.
         logger.error("Tienda sin clave Bifrost: %s", e)
-        raise HTTPException(status_code=503, detail=str(e))
+        with timed_stage("response_handling"):
+            raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        with timed_stage("response_handling"):
+            raise HTTPException(status_code=400, detail=str(e))
 
-    store = await resolve_store(request.account_id, request.inbox_id)
+    with timed_stage("store_resolution"):
+        store = await resolve_store(request.account_id, request.inbox_id)
 
-    logger.info(
-        "Agente resultado: '%s' | tienda=%s (%s) | escalado=%s | tools=%s",
-        query, store.store_name, store.channel_name, result.escalado, result.tools_used,
-    )
-
-    return AgentChatResponse(
-        answer=result.answer,
-        intent_detected=result.intent_detected,
-        sources_used=result.sources_used,
-        conversation_id=result.conversation_id,
-        escalado=result.escalado,
-        tools_used=result.tools_used,
-    )
+    with timed_stage("response_handling"):
+        logger.info(
+            "Agente resultado: '%s' | tienda=%s (%s) | escalado=%s | tools=%s",
+            query, store.store_name, store.channel_name, result.escalado, result.tools_used,
+        )
+        return AgentChatResponse(
+            answer=result.answer,
+            intent_detected=result.intent_detected,
+            sources_used=result.sources_used,
+            conversation_id=result.conversation_id,
+            escalado=result.escalado,
+            tools_used=result.tools_used,
+        )
 
 
 @app.get("/health")
@@ -136,3 +141,7 @@ async def list_stores() -> dict:
 async def reload_stores_endpoint() -> dict:
     result = await reload_stores()
     return {"status": "ok", "message": "Tiendas recargadas", **result}
+
+
+# Wrap outside FastAPI's error middleware so totals include generated 500 bodies too.
+app = RequestTimingMiddleware(app)

@@ -22,6 +22,22 @@ from app.models import StoreConfig
 _real_get_store_by_account_id = store_repository.get_store_by_account_id
 
 
+@pytest.fixture
+def offline_client(monkeypatch):
+    from app import main
+    from app.main import app
+
+    async def _noop():
+        pass
+
+    monkeypatch.setattr(main, "validate_settings", lambda: None)
+    monkeypatch.setattr(main, "init_db_pool", _noop)
+    monkeypatch.setattr(main, "close_db_pool", _noop)
+    monkeypatch.setattr(main, "close_clients", _noop)
+    with TestClient(app) as client:
+        yield client
+
+
 # ---------------------------------------------------------------------------
 # Resolución de VK (repository)
 # ---------------------------------------------------------------------------
@@ -247,8 +263,7 @@ class TestSinVK503:
         with pytest.raises(StoreWithoutBifrostKeyError):
             asyncio.run(run_agent("hola", "conv-sin-vk", 18, 2))
 
-    def test_endpoint_devuelve_503(self, monkeypatch):
-        from app.main import app
+    def test_endpoint_devuelve_503(self, monkeypatch, offline_client):
 
         async def _sin_vk(account_id, inbox_id=None):
             return StoreConfig(
@@ -260,11 +275,10 @@ class TestSinVK503:
 
         monkeypatch.setattr("app.agent.core.resolve_store", _sin_vk)
 
-        with TestClient(app) as client:
-            resp = client.post(
-                "/agent/chat",
-                json={"query": "hola", "account_id": 18, "inbox_id": 2},
-            )
+        resp = offline_client.post(
+            "/agent/chat",
+            json={"query": "hola", "account_id": 18, "inbox_id": 2},
+        )
 
         assert resp.status_code == 503
         detail = resp.json()["detail"]
@@ -300,6 +314,7 @@ class TestEcommerGlobalSinFilaBD:
         # conftest instala mocks autouse: hay que forzar las funciones REALES
         # (capturadas al importar el módulo) para probar el camino de verdad.
         monkeypatch.setattr(store_repository, "_TEST_MODE", False)
+        monkeypatch.setattr(store_repository.settings, "BIFROST_VK_ECOMMER", "test-vk-ecommer")
         monkeypatch.setattr(store_repository, "acquire_db", _fake_acquire_db)
         monkeypatch.setattr(store_repository, "get_store_by_account_id", _real_get_store_by_account_id)
         monkeypatch.setattr(store_resolver, "_TEST_MODE", False)

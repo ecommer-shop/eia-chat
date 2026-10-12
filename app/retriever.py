@@ -8,6 +8,7 @@ from qdrant_client.models import Filter, FieldCondition, MatchAny, IsEmptyCondit
 from app.clients import get_azure, get_qdrant
 from app.config import settings
 from app.models import StoreConfig
+from app.observability import timed_stage
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +24,14 @@ _CATALOG_ALIASES: dict[str, list[str]] = {
 }
 
 async def _embed(text: str) -> list[float]:
-    client = get_azure()
-    response = await client.embeddings.create(
-        input=[text],
-        model=settings.AZURE_OPENAI_DEPLOYMENT,
-        dimensions=1536,
-    )
-    return response.data[0].embedding
+    with timed_stage("embedding"):
+        client = get_azure()
+        response = await client.embeddings.create(
+            input=[text],
+            model=settings.AZURE_OPENAI_DEPLOYMENT,
+            dimensions=1536,
+        )
+        return response.data[0].embedding
 
 
 def _normalize_token(text: str) -> str:
@@ -142,14 +144,16 @@ async def search_context(
 
     async def _query_once(vector: list[float]) -> list[dict]:
         try:
-            response = await client.query_points(
-                collection_name=settings.COLLECTION_NAME,
-                query=vector,
-                query_filter=search_filter,
-                limit=limit,
-                with_payload=True,
-            )
-            points = response.points or []
+            with timed_stage("qdrant_query") as query_timing:
+                response = await client.query_points(
+                    collection_name=settings.COLLECTION_NAME,
+                    query=vector,
+                    query_filter=search_filter,
+                    limit=limit,
+                    with_payload=True,
+                )
+                points = response.points or []
+                query_timing["result_count"] = len(points)
             logger.info("Encontrados %d resultados", len(points))
             return _apply_min_score(
                 [{"score": hit.score, "payload": hit.payload} for hit in points]
@@ -166,14 +170,16 @@ async def search_context(
                         if not (isinstance(c, FieldCondition) and c.key == "audience")
                     ]
                     fallback_filter = Filter(must=fallback_conditions) if fallback_conditions else None
-                    response = await client.query_points(
-                        collection_name=settings.COLLECTION_NAME,
-                        query=vector,
-                        query_filter=fallback_filter,
-                        limit=limit,
-                        with_payload=True,
-                    )
-                    points = response.points or []
+                    with timed_stage("qdrant_query") as query_timing:
+                        response = await client.query_points(
+                            collection_name=settings.COLLECTION_NAME,
+                            query=vector,
+                            query_filter=fallback_filter,
+                            limit=limit,
+                            with_payload=True,
+                        )
+                        points = response.points or []
+                        query_timing["result_count"] = len(points)
                     logger.info("Encontrados %d resultados", len(points))
                     return _apply_min_score(
                         [{"score": hit.score, "payload": hit.payload} for hit in points]

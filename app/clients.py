@@ -20,6 +20,7 @@ from qdrant_client import AsyncQdrantClient
 from redis import Redis
 
 from app.config import settings
+from app.observability import timed_stage
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def get_llm(vk: str | None) -> AsyncOpenAI:
     return client
 
 
-async def get_allowed_models(vk: str) -> list[str]:
+async def _get_allowed_models(vk: str) -> list[str]:
     """Modelos que la VK puede usar según su plan (cacheado, TTL configurable).
 
     Devuelve `[]` si el descubrimiento falla: en ese caso `pick_model` usa la
@@ -100,6 +101,21 @@ async def get_allowed_models(vk: str) -> list[str]:
         ids = []
     _allowed_models[vk] = ids
     return ids
+
+
+async def get_allowed_models(vk: str) -> list[str]:
+    if not vk:
+        cache_outcome = "no_key"
+    elif _TEST_MODE:
+        cache_outcome = "test_mode"
+    elif vk in _allowed_models:
+        cache_outcome = "hit"
+    else:
+        cache_outcome = "miss"
+    with timed_stage("model_discovery", cache_outcome=cache_outcome) as timing:
+        models = await _get_allowed_models(vk)
+        timing["result_count"] = len(models)
+        return models
 
 
 def invalidate_allowed_models(vk: str) -> None:

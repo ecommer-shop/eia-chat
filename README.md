@@ -120,6 +120,12 @@ Main RAG endpoint (`/chat` was removed).
 }
 ```
 
+### Reading `/agent/chat` latency events
+
+The application emits one `timing_event` log line per measured stage. Filter logs for `timing_event`, then group lines by `request_id`; `request_total` is the end-to-end endpoint duration. Each line includes `stage`, `elapsed_ms`, and `outcome`. Model events also include `model_role`, the safe model label, and (for completions) `attempt`; discovery includes `cache_outcome`, while retrieval and memory events may include `result_count`.
+
+Compare stage durations within the same request to locate the dominant cost: `intent_classification` and `model_discovery`/`model_selection` cover routing, `embedding` and `qdrant_query` split retrieval, `memory_read`/`memory_write` cover conversation state, and `llm_completion_attempt` shows each classifier or answer call—including a fallback attempt. `answer_post_processing`, `response_handling`, and `request_total` show work after generation and total overhead. A failed attempt is logged separately from a successful fallback. Timing events deliberately omit prompts, queries, answers, history, credentials, and exception messages.
+
 ### `GET /health`
 
 Health check.

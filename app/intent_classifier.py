@@ -4,6 +4,7 @@ import unicodedata
 from langfuse import observe
 from app.clients import get_llm, pick_model
 from app.config import settings
+from app.observability import timed_stage
 
 logger = logging.getLogger(__name__)
 
@@ -117,22 +118,30 @@ async def classify_intent(query: str, vk: str | None = None) -> list[str]:
         logger.warning("Sin VK Bifrost: clasificación solo por keywords")
         return _keyword_fallback(query) or ["CONVERSACIONAL"]
     try:
-        model = await pick_model(
-            vk,
-            [settings.BIFROST_ROUTER_MODEL, settings.BIFROST_CHAT_MODEL_FALLBACK],
-        )
+        with timed_stage("model_selection", model_role="classifier") as selection_timing:
+            model = await pick_model(
+                vk,
+                [settings.BIFROST_ROUTER_MODEL, settings.BIFROST_CHAT_MODEL_FALLBACK],
+            )
+            selection_timing["model"] = model
         client = get_llm(vk)
-        completion = await client.with_options(
-            timeout=settings.BIFROST_ROUTER_TIMEOUT
-        ).chat.completions.create(
-            messages=[
-                {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-                {"role": "user", "content": query},
-            ],
+        with timed_stage(
+            "llm_completion_attempt",
+            model_role="classifier",
             model=model,
-            temperature=0.0,
-            max_tokens=256,
-        )
+            attempt=1,
+        ):
+            completion = await client.with_options(
+                timeout=settings.BIFROST_ROUTER_TIMEOUT
+            ).chat.completions.create(
+                messages=[
+                    {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+                    {"role": "user", "content": query},
+                ],
+                model=model,
+                temperature=0.0,
+                max_tokens=256,
+            )
         raw = (completion.choices[0].message.content or "").strip().upper()
         detected = _parse_intent_output(raw)
         fallback = _keyword_fallback(query)

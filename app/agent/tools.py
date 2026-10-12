@@ -19,7 +19,7 @@ from app.grounding import apply_grounding
 from app.llm_generator import build_prompt
 from app.memory import get_history
 from app.models import StoreConfig
-from app.observability import usage_details_from_completion
+from app.observability import timed_stage, usage_details_from_completion
 from app.renderer import annotate_products, render_product_footer
 from app.retriever import search_context, list_categories
 
@@ -99,14 +99,22 @@ def _history_mentions_products(history: list[dict]) -> bool:
     return False
 
 
-async def _create_completion(vk: str, model: str, messages: list[dict]):
+async def _create_completion(
+    vk: str, model: str, messages: list[dict], attempt: int = 1
+):
     """Llamada cruda a Bifrost (OpenAI-compat) con la VK de la tienda."""
-    return await get_llm(vk).chat.completions.create(
-        messages=messages,
+    with timed_stage(
+        "llm_completion_attempt",
+        model_role="answer",
         model=model,
-        temperature=0.2,
-        max_tokens=1024,
-    )
+        attempt=attempt,
+    ):
+        return await get_llm(vk).chat.completions.create(
+            messages=messages,
+            model=model,
+            temperature=0.2,
+            max_tokens=1024,
+        )
 
 
 async def _create_with_model_fallback(
@@ -119,21 +127,23 @@ async def _create_with_model_fallback(
     Devuelve `(completion, modelo_realmente_usado)`.
     """
     try:
-        return await _create_completion(vk, model, messages), model
+        return await _create_completion(vk, model, messages, attempt=1), model
     except Exception as e:  # noqa: BLE001
         if getattr(e, "status_code", None) != 403:
             raise
         invalidate_allowed_models(vk)
-        retry_model = await pick_model(vk, preference)
-        if retry_model == model:
-            retry_model = settings.BIFROST_CHAT_MODEL_FALLBACK
+        with timed_stage("model_selection", model_role="answer") as timing:
+            retry_model = await pick_model(vk, preference)
+            if retry_model == model:
+                retry_model = settings.BIFROST_CHAT_MODEL_FALLBACK
+            timing["model"] = retry_model
         if retry_model == model:
             raise
         logger.warning(
             "Modelo '%s' bloqueado para la VK (%s caracteres); reintentando con '%s'",
             model, len(vk or ""), retry_model,
         )
-        return await _create_completion(vk, retry_model, messages), retry_model
+        return await _create_completion(vk, retry_model, messages, attempt=2), retry_model
 
 
 @observe(as_type="generation")
@@ -166,7 +176,9 @@ async def answer(
     preference = [settings.BIFROST_CHAT_MODEL, settings.BIFROST_CHAT_MODEL_FALLBACK]
     client = get_client()
     try:
-        model = await pick_model(vk, preference)
+        with timed_stage("model_selection", model_role="answer") as selection_timing:
+            model = await pick_model(vk, preference)
+            selection_timing["model"] = model
         observation = client.start_as_current_observation(
             name="bifrost_chat",
             as_type="generation",
@@ -177,18 +189,19 @@ async def answer(
             completion, model = await _create_with_model_fallback(
                 vk, messages, model, preference
             )
-            raw = completion.choices[0].message.content or ""
-            text = raw.encode("utf-8", errors="replace").decode("utf-8")
-            text = text.replace("\n", " ").replace("\r", "").strip()
-            text, grounding_issues = apply_grounding(
-                text, context_items, history, intent=intent
-            )
-            added_links: list[str] = []
-            if not grounding_issues and text:
-                clean_text, mentioned = annotate_products(text, context_items, intent=intent)
-                footer = render_product_footer(mentioned)
-                text = f"{clean_text} {footer}".strip() if footer else clean_text
-                added_links = [p.url for p in mentioned]
+            with timed_stage("answer_post_processing"):
+                raw = completion.choices[0].message.content or ""
+                text = raw.encode("utf-8", errors="replace").decode("utf-8")
+                text = text.replace("\n", " ").replace("\r", "").strip()
+                text, grounding_issues = apply_grounding(
+                    text, context_items, history, intent=intent
+                )
+                added_links: list[str] = []
+                if not grounding_issues and text:
+                    clean_text, mentioned = annotate_products(text, context_items, intent=intent)
+                    footer = render_product_footer(mentioned)
+                    text = f"{clean_text} {footer}".strip() if footer else clean_text
+                    added_links = [p.url for p in mentioned]
             generation.update(
                 output=text,
                 usage_details=usage_details_from_completion(completion),
