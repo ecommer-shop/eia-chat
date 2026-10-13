@@ -53,21 +53,21 @@ def _update_retriever_scores(result: list[dict]) -> None:
 
 
 @observe(as_type="retriever")
-async def search_catalogo(query: str, store: StoreConfig, limit: int = 10) -> list[dict]:
+async def search_catalogo(query: str, store: StoreConfig, limit: int | None = None) -> list[dict]:
     """Busca productos del catálogo (intención CATALOGO)."""
     logger.info("Tool search_catalogo :: store=%s query='%s'", store.store_name, query)
-    result = await search_context(query, store, ["CATALOGO"], limit=limit)
+    result = await search_context(query, store, ["CATALOGO"], limit=limit or settings.RETRIEVER_LIMIT)
     _update_retriever_scores(result)
     return result
 
 
 @observe(as_type="retriever")
 async def search_docs(
-    query: str, store: StoreConfig, intents: list[str], limit: int = 10
+    query: str, store: StoreConfig, intents: list[str], limit: int | None = None
 ) -> list[dict]:
     """Busca documentos de POLITICAS/INFO_GENERAL."""
     logger.info("Tool search_docs :: store=%s intents=%s", store.store_name, intents)
-    result = await search_context(query, store, list(intents), limit=limit)
+    result = await search_context(query, store, list(intents), limit=limit or settings.RETRIEVER_LIMIT)
     _update_retriever_scores(result)
     return result
 
@@ -100,12 +100,17 @@ def _history_mentions_products(history: list[dict]) -> bool:
 
 
 async def _create_completion(vk: str, model: str, messages: list[dict]):
-    """Llamada cruda a Bifrost (OpenAI-compat) con la VK de la tienda."""
+    """Llamada cruda a Bifrost (OpenAI-compat) con la VK de la tienda.
+
+    `max_tokens` acotado a 300: la regla del template pide respuestas de
+    máximo ~150 tokens; el margen extra cubre el pie de links que agrega el
+    renderer. Sin esto un modelo ch charlán puede devolver párrafos largos.
+    """
     return await get_llm(vk).chat.completions.create(
         messages=messages,
         model=model,
         temperature=0.2,
-        max_tokens=1024,
+        max_tokens=300,
     )
 
 

@@ -343,3 +343,159 @@ class TestVKNeverExposed:
     def test_repr_incluye_el_resto_de_campos(self):
         store = StoreConfig(store_name="tienda-una", bifrost_vk="SECRETA")
         assert "tienda-una" in repr(store)
+
+
+# ---------------------------------------------------------------------------
+# Router: keywords-first (sin LLM) + Phi-4 solo para mensajes ambiguos
+# ---------------------------------------------------------------------------
+
+class TestClassifierKeywordsFirst:
+    """El router debe resolver los mensajes típicos con regex (~0ms) y solo
+    invocar al LLM cuando los keywords no detectan nada."""
+
+    def _counting_llm(self, monkeypatch, allowed=None, respuesta="CATALOGO"):
+        calls = []
+
+        async def _fake_pick(vk, preference):
+            return preference[0]
+
+        class _FakeCompletion:
+            def __init__(self):
+                self.choices = [type("C", (), {"message": type("M", (), {"content": respuesta})()})()]
+
+        class _FakeLLM:
+            class _Completions:
+                async def create(self, **kwargs):
+                    calls.append(kwargs)
+                    return _FakeCompletion()
+
+            chat = type("Chat", (), {"completions": _Completions()})()
+
+            def with_options(self, **kwargs):
+                return self
+
+        monkeypatch.setattr("app.intent_classifier.pick_model", _fake_pick)
+        monkeypatch.setattr("app.intent_classifier.get_llm", lambda vk: _FakeLLM())
+        return calls
+
+    def test_keywords_catalogo_no_llama_llm(self, monkeypatch):
+        calls = self._counting_llm(monkeypatch)
+        intents = asyncio.run(classify_intent("¿tienen Adidas Superstar?", vk="vk-test"))
+        assert intents == ["CATALOGO"]
+        assert calls == []
+
+    def test_keywords_politicas_no_llama_llm(self, monkeypatch):
+        calls = self._counting_llm(monkeypatch)
+        intents = asyncio.run(classify_intent("quiero devolver el producto", vk="vk-test"))
+        assert "POLITICAS" in intents
+        assert calls == []
+
+    def test_keywords_conversacional_no_llama_llm(self, monkeypatch):
+        calls = self._counting_llm(monkeypatch)
+        intents = asyncio.run(classify_intent("hola", vk="vk-test"))
+        assert intents == ["CONVERSACIONAL"]
+        assert calls == []
+
+    def test_ambiguo_con_phi4_llama_llm_en_rol_user(self, monkeypatch):
+        calls = self._counting_llm(monkeypatch, respuesta="CATALOGO")
+        intents = asyncio.run(classify_intent("me atiende una persona?", vk="vk-test"))
+        assert intents == ["CATALOGO"]
+        assert len(calls) == 1
+        kwargs = calls[0]
+        assert kwargs["temperature"] == 0.0
+        assert kwargs["max_tokens"] == 32
+        messages = kwargs["messages"]
+        assert len(messages) == 1
+        assert messages[0]["role"] == "user"
+        assert "CATALOGO" in messages[0]["content"]
+        assert "me atiende una persona?" in messages[0]["content"]
+
+    def test_ambiguo_plan_sin_phi4_no_llama_llm(self, monkeypatch):
+        async def _solo_mini(vk, preference):
+            return "azure/Phi-4-mini-instruct"
+
+        monkeypatch.setattr("app.intent_classifier.pick_model", _solo_mini)
+
+        def _boom(vk):
+            raise AssertionError("no debe llamar al LLM sin Phi-4")
+
+        monkeypatch.setattr("app.intent_classifier.get_llm", _boom)
+        intents = asyncio.run(classify_intent("me atiende una persona?", vk="vk-test"))
+        assert intents == ["CONVERSACIONAL"]
+
+    def test_llm_devuelve_basura_cae_a_conversacional(self, monkeypatch):
+        self._counting_llm(monkeypatch, respuesta="Si no puedes encontrar el boton")
+        intents = asyncio.run(classify_intent("me atiende una persona?", vk="vk-test"))
+        assert intents == ["CONVERSACIONAL"]
+
+
+# ---------------------------------------------------------------------------
+# Prompt: sin links al LLM, docs truncados, historial/few-shot acotados
+# ---------------------------------------------------------------------------
+
+class TestPromptSize:
+    def _doc_item(self, chars=2000):
+        return {"score": 0.9, "payload": {"text": "palabra " * (chars // 8)}}
+
+    def test_format_context_no_incluye_links(self):
+        from app.llm_generator import _format_context
+
+        item = {
+            "score": 0.9,
+            "payload": {
+                "name": "Adidas Superstar",
+                "url": "https://shop.example/adidas",
+                "attributes": ["talla 42", "cuero"],
+            },
+        }
+        text = _format_context([item], "CATALOGO")
+        assert "Adidas Superstar" in text
+        assert "talla 42" in text
+        assert "https://" not in text
+        assert "Link" not in text
+
+    def test_format_context_trunca_documentos(self, monkeypatch):
+        from app import llm_generator
+        from app.llm_generator import _format_context
+
+        monkeypatch.setattr(llm_generator.settings, "RETRIEVER_DOC_MAX_CHARS", 100)
+        text = _format_context([self._doc_item()], "POLITICAS")
+        assert len(text) < 200
+        assert text.endswith("…")
+
+    def test_build_prompt_limita_historial_a_6(self):
+        from app.llm_generator import build_prompt
+
+        history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"}
+            for i in range(12)
+        ]
+        messages = build_prompt(
+            query="hola",
+            intent="CONVERSACIONAL",
+            context_items=[],
+            history=history,
+            store_prompt="Eres x.",
+        )
+        contents = [m["content"] for m in messages]
+        assert "msg5" not in contents
+        assert "msg6" in contents
+
+    def test_build_prompt_limita_few_shot_a_4(self):
+        from app.llm_generator import build_prompt
+
+        few_shot = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"ej{i}"}
+            for i in range(10)
+        ]
+        messages = build_prompt(
+            query="hola",
+            intent="CONVERSACIONAL",
+            context_items=[],
+            history=[],
+            store_prompt="Eres x.",
+            few_shot=few_shot,
+        )
+        ej = [m for m in messages if m["content"].startswith("ej")]
+        assert len(ej) == 4
+        assert ej[0]["content"] == "ej6"

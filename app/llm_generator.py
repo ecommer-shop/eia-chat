@@ -1,31 +1,22 @@
+from app.config import settings
 from app.templates.prompts import SYSTEM_PROMPT_TEMPLATE
 
 
-def _find_url(payload: dict) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    for key in ("url", "link", "href", "source", "uri"):
-        val = payload.get(key)
-        if isinstance(val, str) and val.startswith("http"):
-            return val
-    for meta_key in ("metadata", "meta", "extras", "data"):
-        meta = payload.get(meta_key)
-        if isinstance(meta, dict):
-            for v in meta.values():
-                if isinstance(v, str) and v.startswith("http"):
-                    return v
-    for v in payload.values():
-        if isinstance(v, str) and v.startswith("http"):
-            return v
-    return ""
-
-
 def _format_context(context_items: list[dict], intent: str) -> str:
+    """Serializa los items recuperados para el prompt del LLM.
+
+    - NO incluye URLs: el renderer agrega los links en postproceso cuando el
+      LLM menciona el producto, y la regla del template le prohíbe escribirlas.
+      Así el modelo no gasta tokens ni tentación de inventar links.
+    - Los snippets de documento se truncan a `RETRIEVER_DOC_MAX_CHARS` para
+      que una política larga no dispare el prompt (prefill = latencia).
+    """
     if not context_items:
         return "No se encontraron registros en la base de datos."
 
     parts: list[str] = []
     is_catalogo = "CATALOGO" in intent
+    max_doc_chars = settings.RETRIEVER_DOC_MAX_CHARS
 
     for item in context_items:
         payload = item.get("payload", {}) or {}
@@ -34,10 +25,7 @@ def _format_context(context_items: list[dict], intent: str) -> str:
             name = payload.get("name") or payload.get("title") or "Producto sin nombre"
             attrs = payload.get("attributes") or payload.get("atributos") or []
             attrs_text = ", ".join(attrs) if isinstance(attrs, (list, tuple)) else str(attrs)
-            url = _find_url(payload)
             segment = f">> Producto: {name}"
-            if url:
-                segment += f" Link: {url}"
             if attrs_text and attrs_text != "[]":
                 segment += f" Info: {attrs_text}"
             parts.append(segment)
@@ -46,12 +34,10 @@ def _format_context(context_items: list[dict], intent: str) -> str:
         text = payload.get("text") or payload.get("content") or payload.get("body") or payload.get("policy")
         if text:
             snippet = text if isinstance(text, str) else str(text)
+            if max_doc_chars > 0 and len(snippet) > max_doc_chars:
+                snippet = snippet[:max_doc_chars].rsplit(" ", 1)[0] + "…"
             parts.append(f">> Documento: {snippet}")
             continue
-
-        url = _find_url(payload)
-        if url:
-            parts.append(f">> Link: {url}")
 
     return " ".join(parts) if parts else "No se encontraron registros en la base de datos."
 
@@ -74,7 +60,7 @@ def build_prompt(
 
     messages: list[dict] = [{"role": "system", "content": system_content}]
 
-    for example in (few_shot or [])[-6:]:
+    for example in (few_shot or [])[-4:]:
         if isinstance(example, dict) and example.get("role") in ("user", "assistant"):
             messages.append({
                 "role": example["role"],
@@ -93,7 +79,7 @@ def build_prompt(
             ),
         })
 
-    for msg in history[-8:]:
+    for msg in history[-6:]:
         role = msg.get("role", "user")
         messages.append({"role": role, "content": msg.get("content", "")})
 
