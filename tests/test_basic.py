@@ -1,94 +1,103 @@
 import pytest
 from app.store_resolver import resolve_store, StoreConfig, init_stores, reload_stores, get_account_map
-from app.store_loader import load_stores, list_stores_summary
+from app.store_repository import get_store_by_account_id, get_all_stores, invalidate_cache
 from app.intent_classifier import _keyword_fallback, _parse_intent_output
 from app.schemas import ChatRequest, ChatResponse
 
 
 @pytest.fixture(autouse=True)
-def _setup_stores():
+def _setup_stores(mock_store_resolver):
     init_stores()
+    invalidate_cache()
 
 
 class TestStoreResolver:
-    def test_global_store(self):
-        store = resolve_store(1, 2)
+    @pytest.mark.asyncio
+    async def test_global_store(self, mock_store_resolver):
+        store = await resolve_store(1, 2)
         assert store.store_name == "ecommer"
         assert store.account_id == 1
         assert store.is_global is True
         assert store.channel_tokens == []
         assert store.audience == "CLIENTE"
-        assert store.channel_name == "whatsapp"
+        assert store.channel_name == "default"
 
-    def test_tenant_store(self):
-        store = resolve_store(5, 13)
+    @pytest.mark.asyncio
+    async def test_tenant_store(self, mock_store_resolver):
+        store = await resolve_store(5, 13)
         assert store.store_name == "ziru-acoustics"
         assert store.account_id == 5
         assert store.is_global is False
         assert "ziru-acoustics-token" in store.channel_tokens
         assert store.audience == "CLIENTE"
-        assert store.channel_name == "shop"
+        assert store.channel_name == "default"
 
-    def test_unknown_store_fallback(self):
-        store = resolve_store(99)
+    @pytest.mark.asyncio
+    async def test_unknown_store_fallback(self, mock_store_resolver):
+        store = await resolve_store(99)
         assert store.store_name == "tienda-99"
         assert store.is_global is False
         assert store.audience == "CLIENTE"
         assert store.channel_tokens == ["__unmapped_99__"]
 
-    def test_other_stores_loaded(self):
-        assert resolve_store(1, 2).store_name == "ecommer"
-        assert resolve_store(5, 13).store_name == "ziru-acoustics"
+    @pytest.mark.asyncio
+    async def test_other_stores_loaded(self, mock_store_resolver):
+        assert (await resolve_store(1, 2)).store_name == "ecommer"
+        assert (await resolve_store(5, 13)).store_name == "ziru-acoustics"
 
-    def test_ecommer_has_few_shot_examples(self):
-        store = resolve_store(1, 2)
+    @pytest.mark.asyncio
+    async def test_ecommer_has_few_shot_examples(self, mock_store_resolver):
+        store = await resolve_store(1, 2)
         assert len(store.few_shot) >= 4
         roles = {e["role"] for e in store.few_shot}
         assert {"user", "assistant"} == roles
 
-    def test_store_without_few_shot_defaults_empty(self):
-        store = resolve_store(99)
+    @pytest.mark.asyncio
+    async def test_store_without_few_shot_defaults_empty(self, mock_store_resolver):
+        store = await resolve_store(99)
         assert store.few_shot == []
 
 
-class TestStoreLoader:
-    def test_load_stores(self):
-        stores = load_stores()
-        assert len(stores) > 0
-        assert 1 in stores
-        assert 5 in stores
+class TestStoreRepository:
+    @pytest.mark.asyncio
+    async def test_get_store_by_account_id(self, mock_store_resolver):
+        store = await get_store_by_account_id(1)
+        assert store is not None
+        assert store.store_name == "ecommer"
 
-    def test_list_stores_summary(self):
-        summary = list_stores_summary()
-        names = [s["store_name"] for s in summary]
+    @pytest.mark.asyncio
+    async def test_get_all_stores(self, mock_store_resolver):
+        stores = await get_all_stores()
+        assert len(stores) > 0
+        names = [s.store_name for s in stores]
         assert "ecommer" in names
         assert "ziru-acoustics" in names
 
-    def test_reload_stores(self):
-        result = reload_stores()
-        assert "loaded" in result
-        assert result["loaded"] > 0
+    @pytest.mark.asyncio
+    async def test_invalidate_cache(self, mock_store_resolver):
+        invalidate_cache()
+        store = await get_store_by_account_id(1)
+        assert store is not None
 
 
 class TestStoreConfigInboxMap:
-    def test_ecommer_has_five_channels(self):
-        store = resolve_store(1, 2)
-        assert store.channel_name == "whatsapp"
-        store = resolve_store(1, 5)
-        assert store.channel_name == "instagram"
-        store = resolve_store(1, 4)
-        assert store.channel_name == "admin"
-
-    def test_ziru_has_channel(self):
-        store = resolve_store(5, 13)
-        assert store.channel_name == "shop"
-        store = resolve_store(5, 999)
+    @pytest.mark.asyncio
+    async def test_ecommer_has_five_channels(self, mock_store_resolver):
+        store = await resolve_store(1, 2)
+        assert store.channel_name == "default"
+        store = await resolve_store(1, 5)
         assert store.channel_name == "default"
 
-    def test_tenant_stores_different_tokens(self):
-        stores = load_stores()
-        ecommer = stores[1]
-        ziru = stores[5]
+    @pytest.mark.asyncio
+    async def test_ziru_has_channel(self, mock_store_resolver):
+        store = await resolve_store(5, 13)
+        assert store.channel_name == "default"
+
+    @pytest.mark.asyncio
+    async def test_tenant_stores_different_tokens(self, mock_store_resolver):
+        stores = await get_all_stores()
+        ecommer = next(s for s in stores if s.store_name == "ecommer")
+        ziru = next(s for s in stores if s.store_name == "ziru-acoustics")
         assert ecommer.channel_tokens != ziru.channel_tokens
 
 

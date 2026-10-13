@@ -15,3 +15,9 @@ class StoreConfig:
     few_shot: list[dict] = field(default_factory=list)
     inbox_map: dict[int, str] = field(default_factory=dict)
     prompts: dict[str, str] = field(default_factory=dict)
+    # VK de Bifrost usada por los LLM de esta tienda (por plan de pago).
+    # `repr=False`: los dataclass NO deben exponerla en logs ni en las trazas
+    # de Langfuse (serializa los argumentos de las funciones observadas).
+    bifrost_vk: str | None = field(default=None, repr=False)
+    # Plan de pago asociado a la VK (free | tienda | omnichannel | ecommer).
+    bifrost_plan: str = ""

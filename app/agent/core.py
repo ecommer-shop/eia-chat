@@ -2,9 +2,10 @@
 
 Flujo determinista:
 
-    resolve_store(account_id, inbox_id) → classify_intent(query) → [tienda no mapeada → escalate]
+    resolve_store(account_id, inbox_id) → [tienda mapeada sin VK Bifrost → error 503]
+    → classify_intent(query, vk) → [tienda no mapeada → escalate]
     → dispatch de herramientas por intención (search_catalogo/search_docs)
-    → get_memory → answer (Groq) → save_message
+    → get_memory → answer (Bifrost) → save_message
 
 Reglas:
 - Tienda no mapeada (fail-closed) → herramienta terminal `escalate`, sin LLM.
@@ -23,6 +24,7 @@ from datetime import datetime
 from langfuse import observe
 
 from app.agent import tools
+from app.exceptions import StoreWithoutBifrostKeyError
 from app.intent_classifier import classify_intent
 from app.memory import save_message
 from app.observability import trace_attributes
@@ -130,7 +132,7 @@ async def run_agent(
         raise ValueError("El mensaje no puede estar vacío.")
 
     conversation_id = conversation_id or _new_conversation_id()
-    store = resolve_store(account_id, inbox_id)
+    store = await resolve_store(account_id, inbox_id)
 
     trace_ctx = trace_attributes(
         trace_name=f"agent-chat",
@@ -148,7 +150,12 @@ async def run_agent(
     )
 
     with trace_ctx:
-        intents = await classify_intent(query)
+        if store.is_mapped and not store.bifrost_vk:
+            # Toda tienda activa debe tener una bifrost_key: si no la tiene es
+            # un error de creación de claves (no se usa la VK de otra tienda).
+            raise StoreWithoutBifrostKeyError(account_id, store.store_name)
+
+        intents = await classify_intent(query, vk=store.bifrost_vk)
         intent_str = ", ".join(intents)
         logger.info(
             "Agente: '%s' | tienda=%s (%s) | intents=%s",

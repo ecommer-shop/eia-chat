@@ -52,13 +52,12 @@ def trace_attributes(
     )
 
 
-def usage_details_from_groq(completion: Any) -> dict[str, int]:
-    """Extrae usage_details de una respuesta Groq.
+def usage_details_from_completion(completion: Any) -> dict[str, int]:
+    """Extrae usage_details de una respuesta del LLM (Bifrost/OpenAI-compat).
 
-    Para los modelos de razonamiento (gpt-oss) la mayor parte del coste está en
-    los tokens de entrada/salida. Groq expone `usage.prompt_tokens` y
-    `usage.completion_tokens`; `completion_tokens_details.reasoning_tokens`
-    puede existir y se deja como referencia.
+    Espera la forma estándar `usage.prompt_tokens` / `usage.completion_tokens`.
+    `completion_tokens_details.reasoning_tokens` puede existir y se deja como
+    referencia.
     """
     usage = getattr(completion, "usage", None)
     if usage is None:
