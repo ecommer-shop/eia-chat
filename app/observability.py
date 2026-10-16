@@ -16,7 +16,9 @@ API usada (Langfuse Python SDK >= 4.15, modelo observations-first):
 """
 
 import logging
+import os
 import re
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -32,6 +34,49 @@ _SAFE_FIELDS = {
     "status_code",
 }
 _SAFE_LABEL = re.compile(r"[^A-Za-z0-9._/-]")
+_TIMING_OUTCOME = re.compile(r"(?:^|\s)outcome=(success|failure)(?:\s|$)")
+
+
+class TerminalColorFormatter(logging.Formatter):
+    """Add terminal-only color without changing the underlying log record."""
+
+    _COLORS = {
+        "success": "\x1b[32m",
+        "failure": "\x1b[31m",
+        "warning": "\x1b[33m",
+        "error": "\x1b[31m",
+    }
+    _RESET = "\x1b[0m"
+
+    def __init__(self, fmt: str, *, stream=None):
+        super().__init__(fmt)
+        self.stream = stream if stream is not None else sys.stderr
+
+    def _terminal_colors_enabled(self) -> bool:
+        is_tty = getattr(self.stream, "isatty", None)
+        return (
+            "NO_COLOR" not in os.environ
+            and callable(is_tty)
+            and is_tty()
+        )
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
+        if not self._terminal_colors_enabled():
+            return rendered
+
+        message = record.getMessage()
+        color = None
+        if message.startswith("timing_event "):
+            match = _TIMING_OUTCOME.search(message)
+            if match:
+                color = self._COLORS[match.group(1)]
+        elif record.levelno >= logging.ERROR:
+            color = self._COLORS["error"]
+        elif record.levelno >= logging.WARNING:
+            color = self._COLORS["warning"]
+
+        return f"{color}{rendered}{self._RESET}" if color else rendered
 
 
 def _safe_label(value: object) -> str:

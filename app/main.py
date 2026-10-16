@@ -13,12 +13,14 @@ from app.store_resolver import resolve_store, reload_stores
 from app.store_repository import get_all_stores
 from app.agent.core import run_agent
 from app.db import init_db_pool, close_db_pool
-from app.observability import RequestTimingMiddleware, timed_stage
+from app.observability import RequestTimingMiddleware, TerminalColorFormatter, timed_stage
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+_log_handler = logging.StreamHandler()
+_log_handler.setFormatter(TerminalColorFormatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=_log_handler.stream,
+))
+logging.basicConfig(level=logging.INFO, handlers=[_log_handler])
 logger = logging.getLogger(__name__)
 
 

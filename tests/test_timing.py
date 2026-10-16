@@ -1,6 +1,7 @@
 """Offline tests for safe, request-correlated /agent/chat timings."""
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -201,6 +202,60 @@ def test_handled_chat_failure_emits_correlated_total(
     assert totals[0]["outcome"] == "failure"
     assert totals[0]["request_id"]
     assert "failure marker" not in " ".join(_timing_events(caplog))
+
+
+class _TerminalStream:
+    def __init__(self, is_tty):
+        self._is_tty = is_tty
+
+    def isatty(self):
+        return self._is_tty
+
+
+def _format_log(message, *, is_tty, monkeypatch, level=logging.INFO):
+    from app.observability import TerminalColorFormatter
+
+    formatter = TerminalColorFormatter("%(message)s", stream=_TerminalStream(is_tty))
+    record = logging.LogRecord("test", level, __file__, 1, message, (), None)
+    return formatter.format(record)
+
+
+def test_timing_outcomes_use_terminal_colors_without_changing_message(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    success = "timing_event request_id=abc stage=llm_completion_attempt outcome=success"
+    failure = "timing_event request_id=abc stage=llm_completion_attempt outcome=failure"
+
+    colored_success = _format_log(success, is_tty=True, monkeypatch=monkeypatch)
+    colored_failure = _format_log(failure, is_tty=True, monkeypatch=monkeypatch)
+
+    assert "\x1b[32m" in colored_success and "\x1b[0m" in colored_success
+    assert "\x1b[31m" in colored_failure and "\x1b[0m" in colored_failure
+    assert colored_success.replace("\x1b[32m", "").replace("\x1b[0m", "") == success
+    assert colored_failure.replace("\x1b[31m", "").replace("\x1b[0m", "") == failure
+
+
+def test_timing_outcomes_stay_plain_without_terminal_or_with_no_color(monkeypatch):
+    event = "timing_event request_id=abc stage=request_total outcome=success"
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    assert "\x1b[" not in _format_log(event, is_tty=False, monkeypatch=monkeypatch)
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert "\x1b[" not in _format_log(event, is_tty=True, monkeypatch=monkeypatch)
+
+
+def test_unrelated_info_logs_are_not_colored_as_success(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    message = "application started successfully"
+    assert _format_log(message, is_tty=True, monkeypatch=monkeypatch) == message
+
+
+def test_warning_and_error_logs_use_severity_colors(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    warning = _format_log("warning", is_tty=True, monkeypatch=monkeypatch, level=logging.WARNING)
+    error = _format_log("error", is_tty=True, monkeypatch=monkeypatch, level=logging.ERROR)
+
+    assert "\x1b[33mwarning\x1b[0m" == warning
+    assert "\x1b[31merror\x1b[0m" == error
 
 
 def test_classifier_completion_emits_safe_timing(monkeypatch, caplog):
