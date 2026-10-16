@@ -37,7 +37,7 @@ Timing events already include `outcome=success|failure`, but all are emitted as 
 - Strict-TDD evidence: three new tests failed before implementation because the formatter did not exist; the new tests passed after implementation. Writer reported triangulation/refactor coverage for non-TTY, `NO_COLOR`, unrelated INFO and severity colors.
 - Verification: `./.venv/bin/pytest -q tests/test_timing.py` passed (8 tests) in both writer and independent verification; `./.venv/bin/pytest -q` passed (146 tests). Both runs reported one existing Starlette/httpx deprecation warning.
 - Native review assessment was unavailable: the controller rejected the ASSESS input (`intendedUntracked` unsupported). INSPECT did not produce a START route after validation errors; no lineage, receipt, or review approval was created. Because risk assessment was unavailable, an independent read-only verifier was run and passed the focused test command.
-- Existing staged `.gitignore` change remains untouched. No files were staged or committed; committing requires explicit user authorization.
+- Work-unit commit: `2dea3c3` (`feat(observability): color process outcome logs`). Existing staged `.gitignore` change remains untouched; generated `graphify-out/` remains untracked and was not included.
 
 ## Next step
 Implementation and checks are complete. If a native review is needed, resolve the controller's inspect/assess input issue first; delivery actions remain a separate user decision.
