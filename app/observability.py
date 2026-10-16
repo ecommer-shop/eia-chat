@@ -67,7 +67,7 @@ class TerminalColorFormatter(logging.Formatter):
 
         message = record.getMessage()
         color = None
-        if message.startswith("timing_event "):
+        if message.startswith(("timing_event ", "↑ chat_response_sent ")):
             match = _TIMING_OUTCOME.search(message)
             if match:
                 color = self._COLORS[match.group(1)]
@@ -127,10 +127,12 @@ class RequestTimingMiddleware:
         token = _REQUEST_ID.set(request_id)
         started_ns = time.monotonic_ns()
         status_code = None
+        response_logged = False
         unhandled_exception = False
+        logger.info("↓ chat_message_received request_id=%s", request_id)
 
         async def send_with_correlation(message):
-            nonlocal status_code
+            nonlocal status_code, response_logged
             if message["type"] == "http.response.start":
                 status_code = message["status"]
                 headers = [
@@ -141,6 +143,22 @@ class RequestTimingMiddleware:
                 message = {**message, "headers": headers}
 
             await send(message)
+            if (
+                message["type"] == "http.response.body"
+                and not message.get("more_body", False)
+                and not response_logged
+                and status_code is not None
+            ):
+                response_logged = True
+                outcome = "failure" if status_code >= 400 else "success"
+                elapsed_ms = (time.monotonic_ns() - started_ns) / 1_000_000
+                logger.info(
+                    "↑ chat_response_sent request_id=%s elapsed_ms=%.3f status_code=%d outcome=%s",
+                    request_id,
+                    elapsed_ms,
+                    status_code,
+                    outcome,
+                )
 
         try:
             await self.app(scope, receive, send_with_correlation)

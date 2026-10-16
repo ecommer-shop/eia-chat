@@ -35,8 +35,18 @@ def _timing_events(caplog):
             if record.getMessage().startswith("timing_event ")]
 
 
+def _lifecycle_events(caplog, arrow):
+    return [record.getMessage() for record in caplog.records
+            if record.getMessage().startswith(f"{arrow} ")]
+
+
 def _fields(event):
-    return dict(field.split("=", 1) for field in event.split()[1:])
+    parts = event.split()
+    if parts[0] in {"↓", "↑"}:
+        parts = parts[2:]
+    else:
+        parts = parts[1:]
+    return dict(field.split("=", 1) for field in parts)
 
 
 @pytest.fixture
@@ -94,6 +104,22 @@ def test_chat_timings_are_correlated_safe_and_keep_response_contract(
     assert response.json()["answer"] == "Safe answer"
     assert len(fake_llm.calls) == 2
 
+    arrivals = _lifecycle_events(caplog, "↓")
+    responses = _lifecycle_events(caplog, "↑")
+    assert len(arrivals) == len(responses) == 1
+    request_id = arrivals[0].split("request_id=", 1)[1]
+    assert arrivals[0] == f"↓ chat_message_received request_id={request_id}"
+    assert response.headers["x-request-id"] == request_id
+    assert responses[0].startswith("↑ chat_response_sent ")
+    response_fields = _fields(responses[0])
+    assert response_fields == {
+        "request_id": request_id,
+        "elapsed_ms": response_fields["elapsed_ms"],
+        "status_code": "200",
+        "outcome": "success",
+    }
+    assert float(response_fields["elapsed_ms"]) >= 0
+
     events = _timing_events(caplog)
     parsed = [_fields(event) for event in events]
     totals = [event for event in parsed if event.get("stage") == "request_total"]
@@ -122,7 +148,7 @@ def test_chat_timings_are_correlated_safe_and_keep_response_contract(
     assert any(event.get("model") == "azure/Phi-4" for event in selections)
     assert any(event.get("model") == "azure/Phi-4-mini-instruct" for event in selections)
 
-    for event in events:
+    for event in events + arrivals + responses:
         assert "PRIVATE-QUERY-MARKER" not in event
         assert "PRIVATE-EXCEPTION-MARKER" not in event
         assert "Safe answer" not in event
@@ -165,6 +191,8 @@ def test_request_total_waits_for_final_asgi_body_send(caplog):
             await asyncio.wait_for(body_send_started.wait(), timeout=2)
             assert not [event for event in _timing_events(caplog)
                         if "stage=request_total" in event]
+            assert not _lifecycle_events(caplog, "↑")
+            await asyncio.sleep(0.03)
         finally:
             finish_body_send.set()
             await task
@@ -177,6 +205,84 @@ def test_request_total_waits_for_final_asgi_body_send(caplog):
         assert total["request_id"] == request_id
         assert total["outcome"] == "failure"
         assert total["status_code"] == "400"
+        responses = _lifecycle_events(caplog, "↑")
+        assert len(responses) == 1
+        response_fields = _fields(responses[0])
+        assert response_fields["request_id"] == request_id
+        assert response_fields["status_code"] == "400"
+        assert response_fields["outcome"] == "failure"
+        assert float(response_fields["elapsed_ms"]) >= 20
+        assert _REQUEST_ID.get() is None
+
+    caplog.set_level("INFO")
+    asyncio.run(_exercise())
+
+
+def test_response_sent_is_omitted_when_no_final_body_is_sent(caplog):
+    from app.observability import RequestTimingMiddleware
+
+    async def _exercise():
+        async def app(scope, receive, send):
+            return None
+
+        async def receive():
+            raise AssertionError("middleware must not read the request body")
+
+        async def send(message):
+            raise AssertionError("application sent an unexpected response")
+
+        middleware = RequestTimingMiddleware(app)
+        await middleware(
+            {"type": "http", "method": "POST", "path": "/agent/chat"},
+            receive,
+            send,
+        )
+        arrivals = _lifecycle_events(caplog, "↓")
+        assert len(arrivals) == 1
+        assert arrivals[0].startswith("↓ chat_message_received request_id=")
+        assert not _lifecycle_events(caplog, "↑")
+
+    caplog.set_level("INFO")
+    asyncio.run(_exercise())
+
+
+def test_response_sent_is_omitted_when_final_body_send_raises(caplog):
+    from app.observability import RequestTimingMiddleware, _REQUEST_ID
+
+    async def _exercise():
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({
+                "type": "http.response.body",
+                "body": b"secret body",
+                "more_body": False,
+            })
+
+        async def receive():
+            raise AssertionError("middleware must not read the request body")
+
+        async def send(message):
+            if message["type"] == "http.response.body":
+                raise OSError("PRIVATE-SEND-EXCEPTION")
+
+        scope = {
+            "type": "http", "method": "POST", "path": "/agent/chat",
+        }
+        middleware = RequestTimingMiddleware(app)
+        with pytest.raises(OSError, match="PRIVATE-SEND-EXCEPTION"):
+            await middleware(scope, receive, send)
+
+        arrivals = _lifecycle_events(caplog, "↓")
+        assert len(arrivals) == 1
+        assert arrivals[0].startswith("↓ chat_message_received request_id=")
+        assert not _lifecycle_events(caplog, "↑")
+        totals = [_fields(event) for event in _timing_events(caplog)
+                  if "stage=request_total" in event]
+        assert len(totals) == 1
+        assert totals[0]["outcome"] == "failure"
+        assert "PRIVATE-SEND-EXCEPTION" not in " ".join(
+            _lifecycle_events(caplog, "↓") + _lifecycle_events(caplog, "↑")
+        )
         assert _REQUEST_ID.get() is None
 
     caplog.set_level("INFO")
@@ -196,6 +302,10 @@ def test_handled_chat_failure_emits_correlated_total(
     response = offline_client.post("/agent/chat", json={"query": "failure marker", "account_id": 18})
 
     assert response.status_code == 503
+    responses = [_fields(event) for event in _lifecycle_events(caplog, "↑")]
+    assert len(responses) == 1
+    assert responses[0]["status_code"] == "503"
+    assert responses[0]["outcome"] == "failure"
     totals = [_fields(event) for event in _timing_events(caplog)
               if "stage=request_total" in event]
     assert len(totals) == 1
@@ -233,14 +343,35 @@ def test_timing_outcomes_use_terminal_colors_without_changing_message(monkeypatc
     assert colored_success.replace("\x1b[32m", "").replace("\x1b[0m", "") == success
     assert colored_failure.replace("\x1b[31m", "").replace("\x1b[0m", "") == failure
 
+    response_success = "↑ chat_response_sent request_id=abc elapsed_ms=12.345 status_code=200 outcome=success"
+    response_failure = "↑ chat_response_sent request_id=def elapsed_ms=67.890 status_code=503 outcome=failure"
+    colored_response_success = _format_log(
+        response_success, is_tty=True, monkeypatch=monkeypatch
+    )
+    colored_response_failure = _format_log(
+        response_failure, is_tty=True, monkeypatch=monkeypatch
+    )
+    assert "\x1b[32m" in colored_response_success
+    assert "\x1b[31m" in colored_response_failure
+    assert colored_response_success.replace("\x1b[32m", "").replace("\x1b[0m", "") == response_success
+    assert colored_response_failure.replace("\x1b[31m", "").replace("\x1b[0m", "") == response_failure
+
 
 def test_timing_outcomes_stay_plain_without_terminal_or_with_no_color(monkeypatch):
     event = "timing_event request_id=abc stage=request_total outcome=success"
     monkeypatch.delenv("NO_COLOR", raising=False)
     assert "\x1b[" not in _format_log(event, is_tty=False, monkeypatch=monkeypatch)
 
+    response_event = "↑ chat_response_sent request_id=abc elapsed_ms=12.345 status_code=200 outcome=success"
+    assert "\x1b[" not in _format_log(
+        response_event, is_tty=False, monkeypatch=monkeypatch
+    )
+
     monkeypatch.setenv("NO_COLOR", "1")
     assert "\x1b[" not in _format_log(event, is_tty=True, monkeypatch=monkeypatch)
+    assert "\x1b[" not in _format_log(
+        response_event, is_tty=True, monkeypatch=monkeypatch
+    )
 
 
 def test_unrelated_info_logs_are_not_colored_as_success(monkeypatch):

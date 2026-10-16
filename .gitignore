@@ -61,3 +61,5 @@ docker-compose.override.yml
 # PyInstaller
 *.manifest
 *.spec
+# Local Pi runtime state
+.atl/
