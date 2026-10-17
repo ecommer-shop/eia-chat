@@ -5,6 +5,8 @@ Se ejecutan de forma síncrona con `asyncio.run`.
 """
 
 import asyncio
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -402,6 +404,25 @@ class TestFewShotInjection:
                    for m in messages)
         assert messages[-1] == {"role": "user", "content": "hola"}
 
+    def test_answer_guidance_is_concise_grounded_and_preserves_store_prompt(self):
+        store_prompt = "Instrucciones propias de la tienda."
+        messages = build_prompt(
+            query="¿qué productos tienen?",
+            intent="CATALOGO",
+            context_items=[],
+            history=[],
+            store_prompt=store_prompt,
+        )
+
+        system_prompt = messages[0]["content"]
+        assert system_prompt.startswith(store_prompt)
+        assert "sé breve y directo" in system_prompt.lower()
+        assert "usa solo la información del contexto" in system_prompt.lower()
+        assert "hasta 3 opciones relevantes" in system_prompt.lower()
+        assert "producto concreto, céntrate en ese producto" in system_prompt.lower()
+        assert "como máximo una pregunta breve" in system_prompt.lower()
+        assert "150 tokens" not in system_prompt.lower()
+
     def test_agent_wires_store_few_shot(self, monkeypatch):
         monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
@@ -413,6 +434,20 @@ class TestFewShotInjection:
         msgs = fake.records[0]["messages"]
         assert any(m.get("role") == "assistant" and "Simetria" in m.get("content", "")
                    and "buscando" in m.get("content", "") for m in msgs)
+
+    def test_ecommer_broad_catalog_example_is_concise_and_selective(self):
+        prompt_path = Path(__file__).parents[1] / "app" / "prompts" / "ecommer.json"
+        examples = json.loads(prompt_path.read_text(encoding="utf-8"))["few_shot_examples"]
+        broad_query_index = next(
+            i for i, message in enumerate(examples)
+            if message == {"role": "user", "content": "¿Qué productos tienen?"}
+        )
+        broad_reply = examples[broad_query_index + 1]["content"]
+
+        assert "panela orgánica" in broad_reply
+        assert "champiñones orellana" in broad_reply
+        assert "más selecciones" not in broad_reply
+        assert "?" not in broad_reply
 
 
 class TestTrivialMessages:

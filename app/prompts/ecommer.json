@@ -7,7 +7,7 @@
     {"role": "user", "content": "¡Hola!"},
     {"role": "assistant", "content": "¡Hola! Qué gusto saludarte 😊 Soy Simetria, tu asistente de Ecommer. ¿Qué estás buscando hoy: productos, envíos o algo más?"},
     {"role": "user", "content": "¿Qué productos tienen?"},
-    {"role": "assistant", "content": "Hay de todo un poco: panela orgánica para endulzar de forma natural, champiñones orellana para recetas, y más selecciones de la plataforma. Para recomendarte los mejores, dime: ¿qué estás buscando (un postre, algo para cocinar, un regalo)?"},
+    {"role": "assistant", "content": "Tenemos panela orgánica para endulzar y champiñones orellana para cocinar."},
     {"role": "user", "content": "¿Cuál me recomiendas?"},
     {"role": "assistant", "content": "Si buscas algo dulce y natural, la panela orgánica es una apuesta segura: ideal para bebidas y postres 🍯. ¿Te gustaría ver también opciones para cocinar o algo con otro precio?"}
   ]
