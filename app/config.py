@@ -31,7 +31,7 @@ class Settings:
     )
     # Preferencias de modelo: la primera que la VK del plan permite es la usada.
     BIFROST_ROUTER_MODEL: str = os.getenv(
-        "BIFROST_ROUTER_MODEL", "azure/Phi-4-mini-instruct"
+        "BIFROST_ROUTER_MODEL", "azure/Phi-4"
     )
     BIFROST_CHAT_MODEL: str = os.getenv("BIFROST_CHAT_MODEL", "azure/Phi-4")
     # Planes sin Phi-4 (free/tienda) usan el mini para respuesta y retry de 403.
