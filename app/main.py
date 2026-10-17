@@ -1,4 +1,5 @@
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -15,7 +16,7 @@ from app.agent.core import run_agent
 from app.db import init_db_pool, close_db_pool
 from app.observability import RequestTimingMiddleware, TerminalColorFormatter, timed_stage
 
-_log_handler = logging.StreamHandler()
+_log_handler = logging.StreamHandler(sys.stdout)
 _log_handler.setFormatter(TerminalColorFormatter(
     "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     stream=_log_handler.stream,

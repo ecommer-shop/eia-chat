@@ -1,6 +1,7 @@
 """Offline tests for safe, request-correlated /agent/chat timings."""
 
 import asyncio
+import json
 import logging
 from types import SimpleNamespace
 
@@ -357,21 +358,88 @@ def test_timing_outcomes_use_terminal_colors_without_changing_message(monkeypatc
     assert colored_response_failure.replace("\x1b[31m", "").replace("\x1b[0m", "") == response_failure
 
 
-def test_timing_outcomes_stay_plain_without_terminal_or_with_no_color(monkeypatch):
+def test_non_tty_json_preserves_exception_and_stack_diagnostics():
+    import sys
+    from app.observability import TerminalColorFormatter
+
+    try:
+        raise RuntimeError("diagnostic failure")
+    except RuntimeError:
+        exc_info = sys.exc_info()
+
+    stack_info = 'Stack (most recent call last):\n  File "request.py", line 42, in handler\n'
+    record = logging.LogRecord(
+        "test", logging.ERROR, __file__, 1, "request failed", (), exc_info,
+        sinfo=stack_info,
+    )
+    non_tty_formatter = TerminalColorFormatter(
+        "%(message)s", stream=_TerminalStream(False)
+    )
+    rendered = non_tty_formatter.format(record)
+
+    assert "\n" not in rendered
+    payload = json.loads(rendered)
+    assert "request failed\nTraceback (most recent call last):" in payload["message"]
+    assert "RuntimeError: diagnostic failure" in payload["message"]
+    assert stack_info in payload["message"]
+
+    tty_formatter = TerminalColorFormatter("%(message)s", stream=_TerminalStream(True))
+    tty_rendered = tty_formatter.format(record)
+    assert "request failed\nTraceback (most recent call last):" in tty_rendered
+    assert stack_info in tty_rendered
+
+
+def test_non_tty_logs_use_compact_railway_json_without_ansi(monkeypatch):
     event = "timing_event request_id=abc stage=request_total outcome=success"
     monkeypatch.delenv("NO_COLOR", raising=False)
-    assert "\x1b[" not in _format_log(event, is_tty=False, monkeypatch=monkeypatch)
 
-    response_event = "↑ chat_response_sent request_id=abc elapsed_ms=12.345 status_code=200 outcome=success"
-    assert "\x1b[" not in _format_log(
-        response_event, is_tty=False, monkeypatch=monkeypatch
-    )
+    rendered = _format_log(event, is_tty=False, monkeypatch=monkeypatch)
+    payload = json.loads(rendered)
+    assert "\n" not in rendered
+    assert "\x1b[" not in rendered
+    assert payload["message"] == event
+    assert payload["level"] == "info"
+    assert payload["request_id"] == "abc"
+    assert payload["stage"] == "request_total"
+    assert payload["outcome"] == "success"
+    assert payload["logger"] == "test"
+    assert payload["timestamp"]
 
     monkeypatch.setenv("NO_COLOR", "1")
-    assert "\x1b[" not in _format_log(event, is_tty=True, monkeypatch=monkeypatch)
-    assert "\x1b[" not in _format_log(
-        response_event, is_tty=True, monkeypatch=monkeypatch
-    )
+    tty_rendered = _format_log(event, is_tty=True, monkeypatch=monkeypatch)
+    assert tty_rendered == event
+
+
+@pytest.mark.parametrize(
+    ("message", "levelno", "expected_level"),
+    [
+        ("timing_event request_id=abc stage=llm outcome=success", logging.INFO, "info"),
+        ("timing_event request_id=abc stage=llm outcome=failure", logging.INFO, "error"),
+        ("↑ chat_response_sent request_id=abc outcome=success", logging.INFO, "info"),
+        ("↑ chat_response_sent request_id=abc outcome=failure", logging.INFO, "error"),
+        ("ordinary warning", logging.WARNING, "warn"),
+        ("ordinary error", logging.ERROR, "error"),
+        ("ordinary informational line", logging.INFO, "info"),
+    ],
+)
+def test_non_tty_json_levels_follow_outcomes_and_python_severity(
+    message, levelno, expected_level, monkeypatch
+):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    payload = json.loads(_format_log(
+        message, is_tty=False, monkeypatch=monkeypatch, level=levelno
+    ))
+
+    assert payload["level"] == expected_level
+    assert payload["message"] == message
+
+
+def test_application_logs_are_configured_for_stdout():
+    import sys
+    from app import main
+
+    assert main._log_handler.stream is sys.stdout
 
 
 def test_unrelated_info_logs_are_not_colored_as_success(monkeypatch):

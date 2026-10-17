@@ -15,12 +15,14 @@ API usada (Langfuse Python SDK >= 4.15, modelo observations-first):
   metadata, tags, trace_name) propagados a toda observación anidada.
 """
 
+import json
 import logging
 import os
 import re
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
@@ -33,7 +35,12 @@ _SAFE_FIELDS = {
     "model_role", "model", "attempt", "cache_outcome", "result_count", "operation",
     "status_code",
 }
+_JSON_FIELDS = _SAFE_FIELDS | {
+    "request_id", "stage", "elapsed_ms", "outcome",
+}
+_NUMERIC_FIELDS = {"attempt", "result_count", "status_code"}
 _SAFE_LABEL = re.compile(r"[^A-Za-z0-9._/-]")
+_STRUCTURED_FIELD = re.compile(r"(?:^|\s)([a-z_][a-z0-9_]*)=([^\s]+)")
 _TIMING_OUTCOME = re.compile(r"(?:^|\s)outcome=(success|failure)(?:\s|$)")
 
 
@@ -52,15 +59,91 @@ class TerminalColorFormatter(logging.Formatter):
         super().__init__(fmt)
         self.stream = stream if stream is not None else sys.stderr
 
-    def _terminal_colors_enabled(self) -> bool:
+    def _is_tty(self) -> bool:
         is_tty = getattr(self.stream, "isatty", None)
-        return (
-            "NO_COLOR" not in os.environ
-            and callable(is_tty)
-            and is_tty()
-        )
+        return callable(is_tty) and is_tty()
+
+    def _terminal_colors_enabled(self) -> bool:
+        return "NO_COLOR" not in os.environ and self._is_tty()
+
+    @staticmethod
+    def _structured_fields(message: str) -> dict[str, object]:
+        if not message.startswith((
+            "timing_event ", "↓ chat_message_received ", "↑ chat_response_sent "
+        )):
+            return {}
+
+        fields: dict[str, object] = {}
+        for match in _STRUCTURED_FIELD.finditer(message):
+            name, value = match.groups()
+            if name not in _JSON_FIELDS:
+                continue
+            if name in _NUMERIC_FIELDS:
+                try:
+                    fields[name] = max(0, int(value))
+                except ValueError:
+                    continue
+            elif name == "elapsed_ms":
+                try:
+                    elapsed_ms = float(value)
+                except ValueError:
+                    continue
+                if elapsed_ms >= 0:
+                    fields[name] = elapsed_ms
+            elif name == "outcome":
+                if value in {"success", "failure"}:
+                    fields[name] = value
+            else:
+                fields[name] = _safe_label(value)
+        return fields
+
+    @staticmethod
+    def _json_level(record: logging.LogRecord, message: str) -> str:
+        if message.startswith(("timing_event ", "↑ chat_response_sent ")):
+            match = _TIMING_OUTCOME.search(message)
+            if match:
+                return "error" if match.group(1) == "failure" else "info"
+        if record.levelno >= logging.ERROR:
+            return "error"
+        if record.levelno >= logging.WARNING:
+            return "warn"
+        return "info"
+
+    def _message_with_diagnostics(
+        self, record: logging.LogRecord, message: str
+    ) -> str:
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = self.formatException(record.exc_info)
+        if record.exc_text:
+            if not message.endswith("\n"):
+                message += "\n"
+            message += record.exc_text
+        if record.stack_info:
+            if not message.endswith("\n"):
+                message += "\n"
+            message += self.formatStack(record.stack_info)
+        return message
+
+    def _format_json(self, record: logging.LogRecord) -> str:
+        event_message = record.getMessage()
+        message = self._message_with_diagnostics(record, event_message)
+        timestamp = datetime.fromtimestamp(
+            record.created, tz=timezone.utc
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        payload = {
+            "timestamp": timestamp,
+            "level": self._json_level(record, event_message),
+            "logger": record.name,
+            "message": message,
+            **self._structured_fields(event_message),
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     def format(self, record: logging.LogRecord) -> str:
+        if not self._is_tty():
+            return self._format_json(record)
+
         rendered = super().format(record)
         if not self._terminal_colors_enabled():
             return rendered
