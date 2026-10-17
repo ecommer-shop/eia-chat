@@ -33,7 +33,7 @@ class Settings:
     BIFROST_ROUTER_MODEL: str = os.getenv(
         "BIFROST_ROUTER_MODEL", "azure/mistral-small-2503"
     )
-    BIFROST_CHAT_MODEL: str = os.getenv("BIFROST_CHAT_MODEL", "azure/Phi-4")
+    BIFROST_CHAT_MODEL: str = os.getenv("BIFROST_CHAT_MODEL", "azure/mistral-small-2503")
     # Planes sin Phi-4 (free/tienda) usan el mini para respuesta y retry de 403.
     BIFROST_CHAT_MODEL_FALLBACK: str = os.getenv(
         "BIFROST_CHAT_MODEL_FALLBACK", "azure/Phi-4-mini-instruct"
