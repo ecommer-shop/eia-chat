@@ -52,6 +52,16 @@ class TestCollectKnown:
         assert known["urls"] == set()
         assert known["names"] == set()
 
+    def test_asset_image_url_excluded_from_known_urls(self):
+        item = {"payload": {
+            "name": "Cámara instantánea",
+            "url": "https://ecommer.shop/es/product/camara-x",
+            "image": "https://cdn.ecommer.shop/assets/camara-x.jpg",
+        }}
+        known = collect_known([item], [])
+        assert known["urls"] == {"https://ecommer.shop/es/product/camara-x"}
+        assert "camara instantanea" in known["names"]
+
 
 class TestFindUngrounded:
     def test_unknown_url_is_flagged(self):

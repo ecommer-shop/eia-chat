@@ -38,8 +38,21 @@ def _normalize(text: str) -> str:
     return "".join(c.lower() for c in text if c.isalnum() or c.isspace()).strip()
 
 
+# Claves del payload que son URLs de ASSETS (imagen/preview del catálogo),
+# no links navegables de producto. Se excluyen de la cosecha para que el
+# CDN del `featuredAsset` no se considere una URL autorizada (ni para el
+# groundacing ni para el render de links).
+_ASSET_KEYS = frozenset({"image", "preview", "featuredAsset", "featuredasset"})
+
+
 def _extract_urls(payload: dict) -> set[str]:
-    """Cosecha URLs del payload (metadata anidada + texto de embedding)."""
+    """Cosecha URLs del payload (metadata anidada + texto de embedding).
+
+    Se salta el valor de las claves de asset (p. ej. `image`/`preview` del
+    featuredAsset del catálogo): esas URLs apuntan a un CDN de imágenes y no
+    son links de producto navegables, por lo que no deben entrar en el set de
+    URLs autorizadas.
+    """
     urls: set[str] = set()
 
     def _walk(obj, depth: int = 0) -> None:
@@ -49,7 +62,9 @@ def _extract_urls(payload: dict) -> set[str]:
             for u in _URL_RE.findall(obj):
                 urls.add(u.rstrip("/"))
         elif isinstance(obj, dict):
-            for value in obj.values():
+            for key, value in obj.items():
+                if key in _ASSET_KEYS:
+                    continue
                 _walk(value, depth + 1)
         elif isinstance(obj, (list, tuple)):
             for value in obj:
