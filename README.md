@@ -156,6 +156,21 @@ Stores without an active Bifrost key respond `503` (no shared/pooled keys).
 | `REDIS_URL` | Yes | Redis connection URL |
 | `PORT` | No | Server port (default: `8080`; `8000` via `uv run dev`) |
 
+### Assistant catalog (read-only endpoint, HMAC)
+
+Feature flag que conecta `search_catalogo` al endpoint de lectura del catálogo del backend Vendure (`POST /api/assistant/catalog`). Si está apagado o el endpoint falla, la búsqueda degrada al RAG actual (Qdrant) de forma transparente.
+
+| Variable | Required | Description |
+|---|---|---|
+| `ASSISTANT_CATALOG_ENABLED` | No | `1`/`true` para activar el endpoint de catálogo (default apagado). |
+| `ASSISTANT_CATALOG_BASE_URL` | Si enabled | Base URL del backend admin Vendure (sin ruta), p. ej. `https://admin-stg.ecommer.shop`. |
+| `ASSISTANT_CATALOG_SECRET` | Si enabled | Secreto compartido para firmar HMAC (mismo valor que `ASSISTANT_CATALOG_SECRET` en el backend). |
+| `ASSISTANT_CATALOG_KEY_ID` | No | Identificador del caller en `x-assistant-key-id` (default `eia-chat`). |
+| `ASSISTANT_CATALOG_TIMESTAMP_TOLERANCE_SECONDS` | No | Ventana anti-replay del timestamp (default `300`). |
+| `ASSISTANT_CATALOG_TIMEOUT_SECONDS` | No | Timeout HTTP del cliente (default `5`). |
+| `ASSISTANT_CATALOG_STOREFRONT_BASE_URL` | No | Base del storefront para armar la URL de producto desde `slug` (default `https://ecommer.shop`). |
+| `BIFROST_INTENT_CONFIDENCE_THRESHOLD` | No | Umbral de confianza de la intención (default `0.4`); por debajo se degrada al fallback por keywords. |
+
 ## Deployment to Railway
 
 1. Push this repo to GitHub

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -275,6 +275,7 @@ dependencies = [
     { name = "cachetools" },
     { name = "fastapi" },
     { name = "groq" },
+    { name = "httpx" },
     { name = "langfuse" },
     { name = "openai" },
     { name = "pydantic" },
@@ -287,7 +288,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -298,7 +298,7 @@ requires-dist = [
     { name = "cachetools", specifier = ">=5.3.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "groq", specifier = ">=0.5.0" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "langfuse", specifier = ">=4.15.1" },
     { name = "openai", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },

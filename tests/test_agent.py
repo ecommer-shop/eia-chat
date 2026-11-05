@@ -230,6 +230,18 @@ class TestDispatch:
         assert not any(n.startswith("search_") for n in result.tools_used)
         assert result.answer == "¡Hola!"
 
+    def test_buscar_dispatcha_search_catalogo(self, monkeypatch):
+        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["BUSCAR"]))
+        calls = []
+        monkeypatch.setattr(tools, "search_context", _recording_search(calls))
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Respuesta."))
+
+        result = _run("busca audífonos kz", inbox_id=2)
+
+        assert result.escalado is False
+        assert "search_catalogo" in result.tools_used
+        assert calls == [["CATALOGO"]]  # degradación del dispatch normaliza BUSCAR→CATALOGO
+
 
 class TestLLMFallbacks:
     def test_empty_content_fallback(self, monkeypatch):

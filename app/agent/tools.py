@@ -15,6 +15,7 @@ from langfuse import get_client, observe
 
 from app.clients import get_llm, invalidate_allowed_models, pick_model
 from app.config import settings
+from app.catalog_client import search_products as search_catalog_remote
 from app.grounding import apply_grounding
 from app.llm_generator import build_prompt
 from app.memory import get_history
@@ -54,8 +55,28 @@ def _update_retriever_scores(result: list[dict]) -> None:
 
 @observe(as_type="retriever")
 async def search_catalogo(query: str, store: StoreConfig, limit: int = 10) -> list[dict]:
-    """Busca productos del catálogo (intención CATALOGO)."""
+    """Busca productos del catálogo (intención CATALOGO/BUSCAR).
+
+    Si el flag `ASSISTANT_CATALOG_ENABLED` está activo, consulta primero el
+    endpoint de catálogo del backend (Fase 0.5). Si el endpoint no está
+    disponible o no devuelve resultados, degrada al RAG (Qdrant) con la misma
+    query. La ruta de degradación es transparente para el agente.
+    """
     logger.info("Tool search_catalogo :: store=%s query='%s'", store.store_name, query)
+
+    if settings.ASSISTANT_CATALOG_ENABLED:
+        try:
+            remote = await search_catalog_remote(query, limit=limit)
+        except Exception as e:  # noqa: BLE001
+            logger.error("search_catalogo: fallo cliente catálogo: %s", e)
+            remote = []
+        if remote:
+            _update_retriever_scores(remote)
+            return remote
+        logger.info(
+            "search_catalogo: catálogo remoto sin resultados — degradando a RAG"
+        )
+
     result = await search_context(query, store, ["CATALOGO"], limit=limit)
     _update_retriever_scores(result)
     return result

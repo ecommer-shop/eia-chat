@@ -81,7 +81,11 @@ async def _collect_context(
     doc_intents = [i for i in intents if i in ("POLITICAS", "INFO_GENERAL")]
 
     catalog_name: str | None = None
-    if "CATALOGO" in intents:
+    # `BUSCAR` es búsqueda explícita de catálogo (siempre search_catalogo);
+    # `CATALOGO` puede ser búsqueda o listado de categorías.
+    if "BUSCAR" in intents:
+        catalog_name = "search_catalogo"
+    elif "CATALOGO" in intents:
         catalog_name = "list_categorias" if _is_categories_query(query) else "search_catalogo"
 
     for name in ([catalog_name] if catalog_name else []) + (["search_docs"] if doc_intents else []):
@@ -162,6 +166,13 @@ async def run_agent(
             query, store.store_name, store.channel_name, intent_str,
         )
 
+        # `BUSCAR` es la señal de dispatch hacia el catálogo remoto; para el
+        # grounding/renderer (que hoy solo entienden `CATALOGO`) se normaliza.
+        # `intent_str` conserva la etiqueta original para trazabilidad.
+        dispatch_intents = [
+            "CATALOGO" if i == "BUSCAR" else i for i in intents
+        ]
+
         if not store.is_mapped:
             answer = await tools.escalate(store)
             result = AgentResult(
@@ -203,7 +214,10 @@ async def run_agent(
                         context_items = rescued
                         tools_used.extend(rescue_used)
 
-        answer = await tools.answer(query, store, context_items, intent_str, history)
+        answer = await tools.answer(
+            query, store, context_items,
+            ", ".join(dispatch_intents), history,
+        )
         tools_used.append("answer")
 
         save_message(conversation_id, "user", query)

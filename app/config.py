@@ -52,6 +52,26 @@ class Settings:
     # --- Retriever ---
     RETRIEVER_MIN_SCORE: float = float(os.getenv("RETRIEVER_MIN_SCORE", "0.4"))
 
+    # --- Assistant catalog (endpoint de lectura del backend Vendure, HMAC) ---
+    # Feature flag: si está apagado, search_catalogo degrada al RAG (Qdrant).
+    ASSISTANT_CATALOG_ENABLED: bool = os.getenv("ASSISTANT_CATALOG_ENABLED", "0").lower() in ("1", "true", "yes")
+    # Base URL del backend admin Vendure (sin la ruta, p. ej. https://admin-stg.ecommer.shop).
+    ASSISTANT_CATALOG_BASE_URL: str | None = os.getenv("ASSISTANT_CATALOG_BASE_URL")
+    # Secreto compartido para firmar HMAC de las peticiones al catálogo.
+    ASSISTANT_CATALOG_SECRET: str | None = os.getenv("ASSISTANT_CATALOG_SECRET")
+    # Identificador del caller que viaja en `x-assistant-key-id`.
+    ASSISTANT_CATALOG_KEY_ID: str = os.getenv("ASSISTANT_CATALOG_KEY_ID", "eia-chat")
+    # Base del storefront para construir la URL de producto desde el `slug`.
+    # El catálogo devuelve `slug`, no la URL pública; el cliente la arma aquí.
+    ASSISTANT_CATALOG_STOREFRONT_BASE_URL: str | None = os.getenv("ASSISTANT_CATALOG_STOREFRONT_BASE_URL", "https://ecommer.shop")
+    # Tolerancia de timestamp (seg) y timeout HTTP del cliente.
+    ASSISTANT_CATALOG_TIMESTAMP_TOLERANCE_SECONDS: int = int(os.getenv("ASSISTANT_CATALOG_TIMESTAMP_TOLERANCE_SECONDS", "300"))
+    ASSISTANT_CATALOG_TIMEOUT_SECONDS: float = float(os.getenv("ASSISTANT_CATALOG_TIMEOUT_SECONDS", "5"))
+
+    # Umbral de confianza de la intención: por debajo, el dispatch degrada al
+    # RAG actual (keywords) en lugar de usar la query extraída.
+    BIFROST_INTENT_CONFIDENCE_THRESHOLD: float = float(os.getenv("BIFROST_INTENT_CONFIDENCE_THRESHOLD", "0.4"))
+
     # --- CORS (orígenes separados por coma; p. ej. "https://a.com,https://b.com") ---
     CORS_ORIGINS: list[str] = [
         o.strip()
