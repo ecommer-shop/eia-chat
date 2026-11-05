@@ -3,7 +3,7 @@
 Flujo determinista:
 
     resolve_store(account_id, inbox_id) → [tienda mapeada sin VK Bifrost → error 503]
-    → classify_intent(query, vk) → [tienda no mapeada → escalate]
+    → classify_intent_detailed(query, vk) → [tienda no mapeada → escalate]
     → dispatch de herramientas por intención (search_catalogo/search_docs)
     → get_memory → answer (Bifrost) → save_message
 
@@ -25,7 +25,7 @@ from langfuse import observe
 
 from app.agent import tools
 from app.exceptions import StoreWithoutBifrostKeyError
-from app.intent_classifier import classify_intent
+from app.intent_classifier import classify_intent_detailed
 from app.memory import save_message
 from app.observability import trace_attributes
 from app.store_resolver import resolve_store
@@ -74,11 +74,14 @@ def _is_categories_query(query: str) -> bool:
 
 
 async def _collect_context(
-    query: str, store, intents: list[str]
+    query: str, store, intents: list[str], search_query: str | None = None
 ) -> tuple[list[dict], list[str]]:
     context: list[dict] = []
     used: list[str] = []
     doc_intents = [i for i in intents if i in ("POLITICAS", "INFO_GENERAL")]
+    # La query extraída por el clasificador (`params["query"]`) es la que se
+    # usa contra las herramientas de búsqueda; sin ella se cae al texto crudo.
+    effective_query = search_query or query
 
     catalog_name: str | None = None
     # `BUSCAR` es búsqueda explícita de catálogo (siempre search_catalogo);
@@ -86,13 +89,15 @@ async def _collect_context(
     if "BUSCAR" in intents:
         catalog_name = "search_catalogo"
     elif "CATALOGO" in intents:
-        catalog_name = "list_categorias" if _is_categories_query(query) else "search_catalogo"
+        catalog_name = (
+            "list_categorias" if _is_categories_query(effective_query) else "search_catalogo"
+        )
 
     for name in ([catalog_name] if catalog_name else []) + (["search_docs"] if doc_intents else []):
         if name == "search_catalogo":
-            items = await tools.search_catalogo(query, store)
+            items = await tools.search_catalogo(effective_query, store)
         elif name == "search_docs":
-            items = await tools.search_docs(query, store, doc_intents)
+            items = await tools.search_docs(effective_query, store, doc_intents)
         elif name == "list_categorias":
             categories = await tools.list_categorias(store)
             if categories:
@@ -159,7 +164,9 @@ async def run_agent(
             # un error de creación de claves (no se usa la VK de otra tienda).
             raise StoreWithoutBifrostKeyError(account_id, store.store_name)
 
-        intents = await classify_intent(query, vk=store.bifrost_vk)
+        classification = await classify_intent_detailed(query, vk=store.bifrost_vk)
+        intents = classification.intents
+        search_query = classification.params.get("query")
         intent_str = ", ".join(intents)
         logger.info(
             "Agente: '%s' | tienda=%s (%s) | intents=%s",
@@ -203,13 +210,17 @@ async def run_agent(
         if intents == ["CONVERSACIONAL"]:
             context_items: list[dict] = []
         else:
-            context_items, search_used = await _collect_context(query, store, intents)
+            context_items, search_used = await _collect_context(
+                query, store, intents, search_query=search_query
+            )
             tools_used.extend(search_used)
 
             if not context_items:
                 prev_query = _last_user_query(history)
                 if prev_query and prev_query != query:
-                    rescued, rescue_used = await _collect_context(prev_query, store, intents)
+                    rescued, rescue_used = await _collect_context(
+                        prev_query, store, intents, search_query=search_query
+                    )
                     if rescued:
                         context_items = rescued
                         tools_used.extend(rescue_used)

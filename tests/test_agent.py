@@ -63,7 +63,7 @@ def _doc(score=0.8):
 
 def _stub_classify(result):
     async def _classify(query, *args, **kwargs):
-        return list(result)
+        return SimpleNamespace(intents=list(result), params={})
     return _classify
 
 
@@ -146,7 +146,7 @@ class TestStoreMappingFlag:
 
 class TestEscalate:
     def test_unknown_store_escalates_without_llm(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
 
         def _boom_search(*args, **kwargs):
             raise AssertionError("No debe buscar contexto en tienda no mapeada")
@@ -166,7 +166,7 @@ class TestEscalate:
         assert saved == [("user", "¿tienen audífonos?"), ("assistant", result.answer)]
 
     def test_escalate_keeps_conversation_id(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["INFO_GENERAL"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["INFO_GENERAL"]))
         monkeypatch.setattr("app.agent.core.save_message", lambda *a: None)
         result = _run("¿qué es Ecommer?", conversation_id="c99-bis", account_id=99)
         assert result.conversation_id == "c99-bis"
@@ -175,7 +175,7 @@ class TestEscalate:
 
 class TestDispatch:
     def test_catalogo_uses_search_catalogo(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         calls = []
         monkeypatch.setattr(tools, "search_context", _recording_search(calls))
         monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Respuesta del agente."))
@@ -190,7 +190,7 @@ class TestDispatch:
         assert calls == [["CATALOGO"]]
 
     def test_docs_uses_search_docs(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["POLITICAS"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["POLITICAS"]))
         calls = []
         monkeypatch.setattr(tools, "search_context", _recording_search(calls))
         monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Política."))
@@ -202,7 +202,7 @@ class TestDispatch:
         assert calls == [["POLITICAS"]]
 
     def test_mixed_intents_use_both_search_tools(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent",
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
                             _stub_classify(["CATALOGO", "POLITICAS"]))
         calls = []
         monkeypatch.setattr(tools, "search_context", _recording_search(calls))
@@ -216,7 +216,7 @@ class TestDispatch:
         assert calls == [["CATALOGO"], ["POLITICAS"]]
 
     def test_conversacional_skips_search(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CONVERSACIONAL"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CONVERSACIONAL"]))
 
         def _boom_search(*args, **kwargs):
             raise AssertionError("CONVERSACIONAL no debe llamar al retriever")
@@ -231,7 +231,7 @@ class TestDispatch:
         assert result.answer == "¡Hola!"
 
     def test_buscar_dispatcha_search_catalogo(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["BUSCAR"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["BUSCAR"]))
         calls = []
         monkeypatch.setattr(tools, "search_context", _recording_search(calls))
         monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Respuesta."))
@@ -242,10 +242,30 @@ class TestDispatch:
         assert "search_catalogo" in result.tools_used
         assert calls == [["CATALOGO"]]  # degradación del dispatch normaliza BUSCAR→CATALOGO
 
+    def test_buscar_usa_query_extraida_por_el_clasificador(self, monkeypatch):
+        async def _classify(query, *args, **kwargs):
+            return SimpleNamespace(intents=["BUSCAR"], params={"query": "audifonos kz"})
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _classify)
+
+        queries = []
+
+        async def _search(query, store, intents, limit=10):
+            queries.append(query)
+            return [_product()]
+
+        monkeypatch.setattr(tools, "search_context", _search)
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Respuesta."))
+
+        result = _run("busca audifonos kz asdf foo bar", inbox_id=2)
+
+        assert "search_catalogo" in result.tools_used
+        assert queries == ["audifonos kz"]
+        assert "busca audifonos kz asdf foo bar" not in queries
+
 
 class TestLLMFallbacks:
     def test_empty_content_fallback(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
         monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq(content="", finish_reason="stop"))
 
@@ -254,7 +274,7 @@ class TestLLMFallbacks:
         assert "reformular" in result.answer
 
     def test_llm_error_fallback(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
         monkeypatch.setattr(tools, "get_llm",
                             lambda *a, **k: _FakeGroq(error=RuntimeError("boom")))
@@ -266,7 +286,7 @@ class TestLLMFallbacks:
 
 class TestNoContextGuard:
     def test_no_context_injects_guard(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
 
         async def _no_context(*a, **k):
             return []
@@ -279,7 +299,7 @@ class TestNoContextGuard:
         assert _has_guard(fake.records[0]["messages"])
 
     def test_with_context_omits_guard(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
 
         async def _with_context(*a, **k):
             return [_product(score=0.9, name="KZ Castor Pro")]
@@ -292,7 +312,7 @@ class TestNoContextGuard:
         assert not _has_guard(fake.records[0]["messages"])
 
     def test_no_context_with_prior_products_omits_guard(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
 
         async def _no_context(*a, **k):
             return []
@@ -312,7 +332,7 @@ class TestNoContextGuard:
 
 class TestFollowUpRescue:
     def test_no_results_rescues_with_previous_query(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         calls = []
         monkeypatch.setattr(tools, "search_context",
                             _recording_conditional_search(calls, good_terms=("productos",)))
@@ -330,7 +350,7 @@ class TestFollowUpRescue:
         assert not _has_guard(fake.records[0]["messages"])
 
     def test_no_previous_query_no_rescue(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         calls = []
         monkeypatch.setattr(tools, "search_context",
                             _recording_conditional_search(calls, good_terms=("productos",)))
@@ -346,7 +366,7 @@ class TestFollowUpRescue:
         assert _has_guard(fake.records[0]["messages"])
 
     def test_same_previous_query_no_rescue_loop(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         calls = []
         monkeypatch.setattr(tools, "search_context",
                             _recording_conditional_search(calls, good_terms=("jaula",)))
@@ -366,7 +386,7 @@ class TestFollowUpUsesPriorProducts:
                 "content": "👉 Panela orgánica 🔗 https://ecommer.shop/es/product/panela-organica"}]
 
     def test_conversacional_followup_skips_guard_and_search(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CONVERSACIONAL"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CONVERSACIONAL"]))
         monkeypatch.setattr(tools, "get_history", lambda cid: self.HISTORY)
         monkeypatch.setattr(tools, "search_context", _fail_never)
         fake = _FakeGroq("Te recomiendo la panela orgánica.")
@@ -415,7 +435,7 @@ class TestFewShotInjection:
         assert messages[-1] == {"role": "user", "content": "hola"}
 
     def test_agent_wires_store_few_shot(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
         fake = _FakeGroq("Respuesta.")
         monkeypatch.setattr(tools, "get_llm", lambda *a, **k: fake)
@@ -429,7 +449,7 @@ class TestFewShotInjection:
 
 class TestTrivialMessages:
     def test_dot_reply_short_without_llm_or_memory(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CONVERSACIONAL"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CONVERSACIONAL"]))
         monkeypatch.setattr(tools, "get_llm", _fail_never)
         monkeypatch.setattr(tools, "search_context", _fail_never)
         saved = []
@@ -443,7 +463,7 @@ class TestTrivialMessages:
         assert saved == []
 
     def test_emoji_reply_short(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CONVERSACIONAL"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CONVERSACIONAL"]))
         monkeypatch.setattr(tools, "get_llm", _fail_never)
         saved = []
         monkeypatch.setattr("app.agent.core.save_message", lambda *a: saved.append(a))
@@ -456,7 +476,7 @@ class TestTrivialMessages:
 
 class TestMemory:
     def test_history_flows_into_prompt(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
         monkeypatch.setattr(tools, "get_history",
                             lambda cid: [{"role": "user", "content": "turno anterior"}])
@@ -470,7 +490,7 @@ class TestMemory:
         assert messages[-1] == {"role": "user", "content": "¿y trae estuche?"}
 
     def test_messages_saved_user_and_assistant(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
         monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Respuesta."))
         saved = []
@@ -484,7 +504,7 @@ class TestMemory:
 
 class TestGroundingGuardrail:
     def test_hallucinated_product_is_blocked(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
 
         async def _no_context(*a, **k):
             return []
@@ -497,7 +517,7 @@ class TestGroundingGuardrail:
         assert result.answer == FALLBACK_UNGROUNDED
 
     def test_grounded_answer_passes_through(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
 
         async def _with_context(*a, **k):
             return [_product(score=0.9, name="KZ Castor Pro")]
@@ -513,7 +533,7 @@ class TestGroundingGuardrail:
         assert f"🔗 {url}" not in result.answer
 
     def test_followup_product_from_history_passes(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
 
         async def _with_context(*a, **k):
             return [_product(score=0.9, name="KZ Castor Pro")]
@@ -531,7 +551,7 @@ class TestGroundingGuardrail:
         assert "Panela orgánica" in result.answer
 
     def test_missing_product_link_appended(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
 
         async def _with_context(*a, **k):
             return [_product(score=0.9, name="KZ Castor Pro")]
@@ -547,7 +567,7 @@ class TestGroundingGuardrail:
 
 class TestCategoriesDispatch:
     def test_categories_query_uses_list_categorias_not_search(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _fail_never)
 
         async def _fake_cats(store):
@@ -564,7 +584,7 @@ class TestCategoriesDispatch:
         assert result.sources_used == 1
 
     def test_non_categories_query_uses_search_catalogo(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "list_categorias", _fail_never)
         calls = []
         monkeypatch.setattr(tools, "search_context", _recording_search(calls))
@@ -575,7 +595,7 @@ class TestCategoriesDispatch:
         assert calls == [["CATALOGO"]]
 
     def test_categories_query_with_tenants(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _fail_never)
 
         async def _fake_cats(store):
@@ -596,7 +616,7 @@ class TestInputs:
             _run("   ", inbox_id=2)
 
     def test_missing_conversation_id_generates_one(self, monkeypatch):
-        monkeypatch.setattr("app.agent.core.classify_intent", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
         monkeypatch.setattr(tools, "search_context", _recording_search([]))
         monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Respuesta."))
         result = asyncio.run(run_agent("hola", "", 1, 2))
