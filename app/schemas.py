@@ -13,6 +13,13 @@ class ChatRequest(BaseModel):
     account_id: int | None = Field(default=None, description="ID de la cuenta Chatwoot (identifica la tienda)")
     inbox_id: int = Field(default=1, description="ID del inbox de Chatwoot (→ canal dentro de la tienda)")
     user_id: int | None = Field(None, description="ID del usuario en Chatwoot")
+    chatwoot_conversation_id: int | None = Field(
+        None,
+        description=(
+            "ID entero de la conversación en Chatwoot (identidad para las tools de "
+            "carrito/pedido). Distinto de `conversation_id`, que es la clave de memoria."
+        ),
+    )
     channel: str | None = Field(None, description="Canal de origen: whatsapp, instagram, messenger, shop, admin")
 
     @model_validator(mode="before")

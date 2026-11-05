@@ -16,6 +16,8 @@ from langfuse import get_client, observe
 from app.clients import get_llm, invalidate_allowed_models, pick_model
 from app.config import settings
 from app.catalog_client import search_products as search_catalog_remote
+from app.identity_client import get_cart as get_cart_remote
+from app.identity_client import get_order as get_order_remote
 from app.grounding import apply_grounding
 from app.llm_generator import build_prompt
 from app.memory import get_history
@@ -108,6 +110,191 @@ async def list_categorias(store: StoreConfig) -> list[str]:
 async def get_memory(conversation_id: str) -> list[dict]:
     """Recupera el historial de la conversación (Redis/Valkey)."""
     return get_history(conversation_id)
+
+
+# Fallbacks cordiales de las tools de identidad (Fase 1b). Nunca lanzan hacia
+# el agente: sin identidad o sin configuración el turno sigue y el usuario
+# recibe una respuesta útil en vez de un 500.
+CART_NOT_IDENTIFIED_MESSAGE = (
+    "No puedo ver tu carrito porque no estás identificado. "
+    "Iniciá sesión en la tienda para que pueda ayudarte con eso."
+)
+CART_EMPTY_MESSAGE = (
+    "No tenés un carrito activo en este momento. "
+    "Cuando agregues productos a tu carrito, puedo contarte qué llevás y cuánto suma."
+)
+ORDER_NOT_IDENTIFIED_MESSAGE = (
+    "No puedo ver tu pedido porque no estás identificado. "
+    "Iniciá sesión en la tienda para que pueda ayudarte con eso."
+)
+ORDER_NEEDS_CODE_MESSAGE = (
+    "Para consultar tu pedido necesito el número de pedido que te enviamos por correo "
+    "al confirmar la compra. ¿Me lo pasás?"
+)
+ORDER_NOT_FOUND_MESSAGE = (
+    "No encuentro un pedido con ese número en tu cuenta. "
+    "Revisá el código y volvé a intentarlo, o iniciá sesión con la cuenta con la que compraste."
+)
+
+# Nombre legible del estado del pedido (Vendure `order.state`).
+_ORDER_STATE_LABELS = {
+    "AddingItems": "en armado (todavía es un carrito)",
+    "ArrangingPayment": "pendiente de pago",
+    "PaymentAuthorized": "pago autorizado",
+    "PaymentSettled": "pago confirmado",
+    "PartiallyShipped": "enviado parcialmente",
+    "Shipped": "enviado",
+    "PartiallyDelivered": "entregado parcialmente",
+    "Delivered": "entregado",
+    "Modifying": "en modificación",
+    "ArrangingAdditionalPayment": "pendiente de un pago adicional",
+    "Cancelled": "cancelado",
+}
+
+
+def _money(order: dict, amount_key: str, decimal_key: str) -> str:
+    """Importe listo para el usuario: `$ 185.00` (moneda del pedido)."""
+    decimal = order.get(decimal_key)
+    currency = order.get("currencyCode") or ""
+    if isinstance(decimal, str) and decimal.strip():
+        return f"$ {decimal.strip()} {currency}".strip()
+    amount = order.get(amount_key)
+    if isinstance(amount, (int, float)):
+        return f"$ {amount} {currency}".strip()
+    return ""
+
+
+def _format_cart(order: dict) -> str:
+    """Resume el carrito: líneas, cantidades y total (texto plano)."""
+    lines = [line for line in (order.get("lines") or []) if isinstance(line, dict)]
+    if not lines:
+        return "Tu carrito está vacío. ¿Querés que te ayude a encontrar algo para agregar?"
+
+    parts: list[str] = []
+    for line in lines:
+        variant = line.get("productVariant") or {}
+        name = variant.get("name") or "Producto"
+        quantity = line.get("quantity")
+        subtotal = line.get("linePriceWithTaxDecimal")
+        segment = f"{name}"
+        if quantity:
+            segment += f" x{quantity}"
+        if isinstance(subtotal, str) and subtotal.strip():
+            segment += f" ({_money(line, 'linePriceWithTax', 'linePriceWithTaxDecimal')})"
+        parts.append(segment)
+
+    total_quantity = order.get("totalQuantity") or sum(
+        (line.get("quantity") or 0) for line in lines
+    )
+    total = _money(order, "totalWithTax", "totalWithTaxDecimal")
+
+    summary = f"Tu carrito tiene {len(lines)} producto{'s' if len(lines) != 1 else ''}: "
+    summary += "; ".join(parts) + "."
+    if total_quantity:
+        summary += f" En total son {total_quantity} unidad{'es' if total_quantity != 1 else ''}"
+        summary += f" por {total}." if total else "."
+    elif total:
+        summary += f" El total es {total}."
+    return summary
+
+
+def _format_order(order: dict) -> str:
+    """Resume un pedido: código, estado, líneas y total (texto plano)."""
+    code = order.get("code") or ""
+    state = _ORDER_STATE_LABELS.get(order.get("state"), order.get("state") or "")
+
+    header = "Tu pedido"
+    if code:
+        header += f" {code}"
+    if state:
+        header += f" está {state}"
+
+    lines = [line for line in (order.get("lines") or []) if isinstance(line, dict)]
+    detail_parts: list[str] = []
+    for line in lines:
+        variant = line.get("productVariant") or {}
+        name = variant.get("name") or "Producto"
+        quantity = line.get("quantity")
+        detail_parts.append(f"{name} x{quantity}" if quantity else name)
+
+    total = _money(order, "totalWithTax", "totalWithTaxDecimal")
+    message = header + "."
+    if detail_parts:
+        message += " Incluye: " + "; ".join(detail_parts) + "."
+    if total:
+        message += f" Total: {total}."
+    return message
+
+
+@observe(as_type="tool")
+async def get_cart(
+    store: StoreConfig,
+    account_id: int | None,
+    inbox_id: int | None,
+    chatwoot_conversation_id: int | None,
+) -> str:
+    """Carrito activo del comprador de esta conversación (fase 1b).
+
+    Degrada con un mensaje cordial cuando falta la identidad (sin
+    `chatwoot_conversation_id`, sin config del backend o 404 = anónimo/sin
+    sesión). Nunca lanza: el turno sigue con la respuesta generada.
+    """
+    if chatwoot_conversation_id is None or account_id is None:
+        logger.info("Tool get_cart :: sin identidad de conversación — degrada")
+        return CART_NOT_IDENTIFIED_MESSAGE
+
+    logger.info(
+        "Tool get_cart :: store=%s account=%s inbox=%s conversation=%s",
+        store.store_name, account_id, inbox_id, chatwoot_conversation_id,
+    )
+    try:
+        order = await get_cart_remote(account_id, inbox_id, chatwoot_conversation_id)
+    except Exception as e:  # noqa: BLE001
+        logger.error("get_cart: fallo inesperado del cliente de identidad: %s", e)
+        return CART_NOT_IDENTIFIED_MESSAGE
+
+    if order is None:
+        # No se distingue "anónimo" de "sin carrito": el cliente ve un mensaje
+        # útil en ambos casos y no se filtran detalles internos.
+        return CART_EMPTY_MESSAGE
+    return _format_cart(order)
+
+
+@observe(as_type="tool")
+async def get_order(
+    store: StoreConfig,
+    account_id: int | None,
+    inbox_id: int | None,
+    chatwoot_conversation_id: int | None,
+    code: str | None = None,
+) -> str:
+    """Un pedido del comprador, por `code` (fase 1b).
+
+    Sin código no hay consulta posible (el backend exige `code`): se pide el
+    número. Igual que `get_cart`, degrada con un mensaje cordial sin lanzar.
+    """
+    if chatwoot_conversation_id is None or account_id is None:
+        logger.info("Tool get_order :: sin identidad de conversación — degrada")
+        return ORDER_NOT_IDENTIFIED_MESSAGE
+
+    if not code or not str(code).strip():
+        return ORDER_NEEDS_CODE_MESSAGE
+
+    logger.info(
+        "Tool get_order :: store=%s account=%s inbox=%s conversation=%s",
+        store.store_name, account_id, inbox_id, chatwoot_conversation_id,
+    )
+    try:
+        order = await get_order_remote(
+            account_id, inbox_id, chatwoot_conversation_id, str(code).strip()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error("get_order: fallo inesperado del cliente de identidad: %s", e)
+        return ORDER_NOT_IDENTIFIED_MESSAGE
+
+    if order is None:
+        return ORDER_NOT_FOUND_MESSAGE
+    return _format_order(order)
 
 
 def _history_mentions_products(history: list[dict]) -> bool:
@@ -249,6 +436,8 @@ TOOL_REGISTRY: dict[str, Callable[..., Awaitable[object]]] = {
     "search_docs": search_docs,
     "list_categorias": list_categorias,
     "get_memory": get_memory,
+    "get_cart": get_cart,
+    "get_order": get_order,
     "answer": answer,
     "escalate": escalate,
 }

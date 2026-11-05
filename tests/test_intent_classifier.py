@@ -13,7 +13,9 @@ from app.intent_classifier import (
     IntentClassification,
     classify_intent,
     classify_intent_detailed,
+    _extract_order_code,
     _keyword_fallback,
+    _parse_code_param,
     _parse_intent_output,
     _parse_query_param,
 )
@@ -78,6 +80,36 @@ class TestParser:
     def test_parse_query_param_ausente(self):
         assert _parse_query_param("CATALOGO") is None
 
+    def test_parse_code_param(self):
+        assert _parse_code_param("PEDIDO\nCODE: CART-10") == "CART-10"
+
+    def test_parse_code_param_ausente(self):
+        assert _parse_code_param("PEDIDO") is None
+
+    def test_parse_intents_carrito_pedido(self):
+        assert _parse_intent_output("CARRITO, PEDIDO") == ["CARRITO", "PEDIDO"]
+
+
+# ---------------------------------------------------------------------------
+# Fase 1b — extracción de código de pedido
+# ---------------------------------------------------------------------------
+
+class TestOrderCodeExtraction:
+    def test_codigo_con_guion(self):
+        assert _extract_order_code("¿dónde está mi pedido ABC-1234?") == "ABC-1234"
+
+    def test_codigo_con_prefijo_hash(self):
+        assert _extract_order_code("consultá el pedido #98765") == "98765"
+
+    def test_codigo_tras_dos_puntos(self):
+        assert _extract_order_code("mi pedido: 3F9A2B") == "3F9A2B"
+
+    def test_sin_codigo(self):
+        assert _extract_order_code("¿dónde está mi pedido?") is None
+
+    def test_no_confunde_palabras_con_codigo(self):
+        assert _extract_order_code("estado de mi pedido") is None
+
 
 # ---------------------------------------------------------------------------
 # Keyword fallback
@@ -99,6 +131,35 @@ class TestKeywordFallback:
 
     def test_sin_coincidencia_conversacional(self):
         assert _keyword_fallback("hola buenos días") == ["CONVERSACIONAL"]
+
+    # --- Fase 1b: CARRITO / PEDIDO ---
+
+    def test_mi_carrito_detecta_carrito(self):
+        assert "CARRITO" in _keyword_fallback("¿qué tengo en mi carrito?")
+
+    def test_ver_carrito_detecta_carrito(self):
+        assert "CARRITO" in _keyword_fallback("quiero ver el carrito")
+
+    def test_carrito_no_detecta_catalogo(self):
+        assert "CATALOGO" not in _keyword_fallback("mostrame mi carrito")
+
+    def test_mi_pedido_detecta_pedido(self):
+        assert "PEDIDO" in _keyword_fallback("¿dónde está mi pedido?")
+
+    def test_estado_de_pedido_detecta_pedido(self):
+        assert "PEDIDO" in _keyword_fallback("quiero saber el estado de mi pedido")
+
+    def test_seguimiento_de_pedido_detecta_pedido(self):
+        assert "PEDIDO" in _keyword_fallback("necesito el seguimiento de mi pedido")
+
+    def test_quiero_hacer_un_pedido_es_catalogo_no_pedido(self):
+        intents = _keyword_fallback("quiero hacer un pedido")
+        assert "PEDIDO" not in intents
+        assert "CATALOGO" in intents
+
+    def test_comprar_no_es_pedido(self):
+        intents = _keyword_fallback("quiero comprar unos audífonos")
+        assert "PEDIDO" not in intents
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +200,67 @@ class TestDetailed:
         )
         assert result.intents == ["CONVERSACIONAL"]
         assert result.confidence < 0.4
+
+
+# ---------------------------------------------------------------------------
+# Fase 1b — CARRITO / PEDIDO en classify_intent_detailed
+# ---------------------------------------------------------------------------
+
+class TestIdentityIntents:
+    def test_con_vk_carrito(self, monkeypatch, mock_llm):
+        _set_llm(monkeypatch, "CARRITO")
+        result = asyncio.run(
+            classify_intent_detailed("¿qué tengo en mi carrito?", vk="test-vk")
+        )
+        assert "CARRITO" in result.intents
+        assert "code" not in result.params
+
+    def test_con_vk_pedido_con_codigo_del_llm(self, monkeypatch, mock_llm):
+        _set_llm(monkeypatch, "PEDIDO\nCODE: CART-10")
+        result = asyncio.run(
+            classify_intent_detailed("¿dónde está mi pedido CART-10?", vk="test-vk")
+        )
+        assert "PEDIDO" in result.intents
+        assert result.params["code"] == "CART-10"
+
+    def test_con_vk_pedido_con_codigo_en_la_query(self, monkeypatch, mock_llm):
+        _set_llm(monkeypatch, "PEDIDO")
+        result = asyncio.run(
+            classify_intent_detailed("estado de mi pedido ABC-1234", vk="test-vk")
+        )
+        assert "PEDIDO" in result.intents
+        assert result.params["code"] == "ABC-1234"
+
+    def test_con_vk_pedido_sin_codigo_no_setea_code(self, monkeypatch, mock_llm):
+        _set_llm(monkeypatch, "PEDIDO")
+        result = asyncio.run(
+            classify_intent_detailed("¿dónde está mi pedido?", vk="test-vk")
+        )
+        assert "PEDIDO" in result.intents
+        assert "code" not in result.params
+
+    def test_sin_vk_pedido_con_codigo_lo_extrae(self):
+        result = asyncio.run(
+            classify_intent_detailed("mi pedido CART-10", vk=None)
+        )
+        assert "PEDIDO" in result.intents
+        assert result.params["code"] == "CART-10"
+
+    def test_sin_vk_carrito(self):
+        result = asyncio.run(classify_intent_detailed("ver mi carrito", vk=None))
+        assert result.intents == ["CARRITO"]
+
+    def test_error_llm_extrae_codigo_en_fallback(self, monkeypatch, mock_llm):
+        class _Boom:
+            def with_options(self, timeout):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr("app.intent_classifier.get_llm", lambda vk: _Boom())
+        result = asyncio.run(
+            classify_intent_detailed("mi pedido CART-10", vk="test-vk")
+        )
+        assert "PEDIDO" in result.intents
+        assert result.params["code"] == "CART-10"
 
 
 # ---------------------------------------------------------------------------

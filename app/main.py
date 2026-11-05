@@ -76,6 +76,7 @@ async def agent_chat(request: ChatRequest):
             inbox_id=request.inbox_id,
             user_id=request.user_id,
             channel=request.channel,
+            chatwoot_conversation_id=request.chatwoot_conversation_id,
         )
     except StoreWithoutBifrostKeyError as e:
         # Sin VK no hay LLM: es un error de creación/renovación de claves.

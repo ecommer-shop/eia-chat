@@ -116,8 +116,16 @@ class _FakeGroq:
             return SimpleNamespace(choices=[choice])
 
 
-def _run(query, conversation_id="conv-1", account_id=1, inbox_id=2):
-    return asyncio.run(run_agent(query, conversation_id, account_id, inbox_id))
+def _run(query, conversation_id="conv-1", account_id=1, inbox_id=2, chatwoot_conversation_id=None):
+    return asyncio.run(
+        run_agent(
+            query,
+            conversation_id,
+            account_id,
+            inbox_id,
+            chatwoot_conversation_id=chatwoot_conversation_id,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +134,15 @@ def _run(query, conversation_id="conv-1", account_id=1, inbox_id=2):
 
 class TestToolRegistry:
     def test_expected_tools_registered(self):
-        expected = {"search_catalogo", "search_docs", "get_memory", "answer", "escalate"}
+        expected = {
+            "search_catalogo", "search_docs", "get_memory", "answer", "escalate",
+            "get_cart", "get_order",
+        }
         assert expected.issubset(tools.TOOL_REGISTRY.keys())
+
+    def test_identity_tools_are_the_expected_callables(self):
+        assert tools.TOOL_REGISTRY["get_cart"] is tools.get_cart
+        assert tools.TOOL_REGISTRY["get_order"] is tools.get_order
 
     def test_escalation_message_keeps_fail_closed_token(self):
         assert "configurada" in tools.ESCALATION_MESSAGE
@@ -621,3 +636,169 @@ class TestInputs:
         monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Respuesta."))
         result = asyncio.run(run_agent("hola", "", 1, 2))
         assert result.conversation_id.startswith("agent-")
+
+
+# ---------------------------------------------------------------------------
+# Fase 1b — dispatch de identidad (get_cart / get_order) y degradación
+# ---------------------------------------------------------------------------
+
+_CART_ORDER = {
+    "code": "CART-10",
+    "state": "AddingItems",
+    "currencyCode": "COP",
+    "totalQuantity": 2,
+    "totalWithTaxDecimal": "185.00",
+    "lines": [
+        {
+            "quantity": 2,
+            "linePriceWithTaxDecimal": "185.00",
+            "productVariant": {"name": "KZ Castor Pro"},
+        }
+    ],
+}
+
+
+class TestIdentityDispatch:
+    def test_carrito_dispatcha_get_cart(self, monkeypatch):
+        calls = []
+
+        async def _fake_remote(account_id, inbox_id, conversation_id):
+            calls.append((account_id, inbox_id, conversation_id))
+            return dict(_CART_ORDER)
+
+        monkeypatch.setattr(tools, "get_cart_remote", _fake_remote)
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CARRITO"]))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        fake = _FakeGroq("Tu carrito tiene 2 productos por $185.00.")
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: fake)
+
+        result = _run("¿qué tengo en mi carrito?", chatwoot_conversation_id=42)
+
+        assert calls == [(1, 2, 42)]
+        assert "get_cart" in result.tools_used
+        assert result.sources_used == 1
+        assert not _has_guard(fake.records[0]["messages"])
+        context_text = fake.records[0]["messages"][0]["content"]
+        assert "KZ Castor Pro" in context_text
+
+    def test_pedido_con_codigo_dispatcha_get_order(self, monkeypatch):
+        calls = []
+
+        async def _fake_remote(account_id, inbox_id, conversation_id, code):
+            calls.append((account_id, inbox_id, conversation_id, code))
+            return {
+                "code": code,
+                "state": "Shipped",
+                "currencyCode": "COP",
+                "totalWithTaxDecimal": "90.00",
+                "lines": [{"quantity": 1, "productVariant": {"name": "KZ Castor"}}],
+            }
+
+        async def _classify(query, *args, **kwargs):
+            return SimpleNamespace(intents=["PEDIDO"], params={"code": "CART-10"})
+
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _classify)
+        monkeypatch.setattr(tools, "get_order_remote", _fake_remote)
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        fake = _FakeGroq("Tu pedido está en camino.")
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: fake)
+
+        result = _run("¿dónde está mi pedido CART-10?", chatwoot_conversation_id=42)
+
+        assert calls == [(1, 2, 42, "CART-10")]
+        assert "get_order" in result.tools_used
+        assert "KZ Castor" in fake.records[0]["messages"][0]["content"]
+
+    def test_pedido_sin_codigo_pide_el_codigo(self, monkeypatch):
+        async def _boom(*args, **kwargs):
+            raise AssertionError("Sin código no debe llamar al backend")
+
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["PEDIDO"]))
+        monkeypatch.setattr(tools, "get_order_remote", _boom)
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        fake = _FakeGroq("¿Me pasás el número de pedido?")
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: fake)
+
+        result = _run("¿dónde está mi pedido?", chatwoot_conversation_id=42)
+
+        assert "get_order" in result.tools_used
+        assert "número de pedido" in fake.records[0]["messages"][0]["content"]
+
+    def test_sin_chatwoot_conversation_id_degrada_sin_llamar_backend(self, monkeypatch):
+        async def _boom(*args, **kwargs):
+            raise AssertionError("Sin chatwoot_conversation_id no hay llamada de identidad")
+
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CARRITO"]))
+        monkeypatch.setattr(tools, "get_cart_remote", _boom)
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        fake = _FakeGroq("No puedo ver tu carrito porque no estás identificado.")
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: fake)
+
+        result = _run("¿qué tengo en mi carrito?")  # sin chatwoot_conversation_id
+
+        assert "get_cart" in result.tools_used
+        assert "no estás identificado" in fake.records[0]["messages"][0]["content"]
+
+    def test_carrito_none_degrada_a_mensaje_cordial(self, monkeypatch):
+        async def _fake_remote(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CARRITO"]))
+        monkeypatch.setattr(tools, "get_cart_remote", _fake_remote)
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        fake = _FakeGroq("No veo un carrito activo.")
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: fake)
+
+        result = _run("mi carrito", chatwoot_conversation_id=42)
+
+        assert result.escalado is False
+        assert "get_cart" in result.tools_used
+        assert "carrito activo" in fake.records[0]["messages"][0]["content"]
+
+    def test_carrito_y_catalogo_conviven(self, monkeypatch):
+        async def _fake_remote(*args, **kwargs):
+            return dict(_CART_ORDER)
+
+        calls = []
+
+        async def _search(query, store, intents, limit=10):
+            calls.append(list(intents))
+            return [_product()]
+
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _stub_classify(["CARRITO", "CATALOGO"]))
+        monkeypatch.setattr(tools, "get_cart_remote", _fake_remote)
+        monkeypatch.setattr(tools, "search_context", _search)
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Ok."))
+
+        result = _run("mirá mi carrito y buscame audífonos", chatwoot_conversation_id=42)
+
+        assert "get_cart" in result.tools_used
+        assert "search_catalogo" in result.tools_used
+        assert calls == [["CATALOGO"]]
+        assert result.sources_used == 2
+
+    def test_error_del_cliente_no_rompe_el_turno(self, monkeypatch):
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("red caída")
+
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CARRITO"]))
+        monkeypatch.setattr(tools, "get_cart_remote", _boom)
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Seguimos."))
+
+        result = _run("mi carrito", chatwoot_conversation_id=42)
+
+        assert result.answer == "Seguimos."
+        assert result.escalado is False
+
+    def test_back_compat_sin_el_kwarg(self, monkeypatch):
+        """`run_agent` sin `chatwoot_conversation_id` sigue funcionando igual."""
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _stub_classify(["CATALOGO"]))
+        monkeypatch.setattr(tools, "search_context", _recording_search([]))
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Respuesta."))
+
+        result = asyncio.run(run_agent("¿tienen audífonos?", "bc-1", 1, 2))
+
+        assert result.answer == "Respuesta."
+        assert not any(t in result.tools_used for t in ("get_cart", "get_order"))

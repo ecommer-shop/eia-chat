@@ -74,7 +74,14 @@ def _is_categories_query(query: str) -> bool:
 
 
 async def _collect_context(
-    query: str, store, intents: list[str], search_query: str | None = None
+    query: str,
+    store,
+    intents: list[str],
+    search_query: str | None = None,
+    account_id: int | None = None,
+    inbox_id: int | None = None,
+    chatwoot_conversation_id: int | None = None,
+    order_code: str | None = None,
 ) -> tuple[list[dict], list[str]]:
     context: list[dict] = []
     used: list[str] = []
@@ -93,7 +100,18 @@ async def _collect_context(
             "list_categorias" if _is_categories_query(effective_query) else "search_catalogo"
         )
 
-    for name in ([catalog_name] if catalog_name else []) + (["search_docs"] if doc_intents else []):
+    names: list[str] = []
+    # Fase 1b: carrito y pedido antes que el catálogo (respuesta acotada).
+    if "CARRITO" in intents:
+        names.append("get_cart")
+    if "PEDIDO" in intents:
+        names.append("get_order")
+    if catalog_name:
+        names.append(catalog_name)
+    if doc_intents:
+        names.append("search_docs")
+
+    for name in names:
         if name == "search_catalogo":
             items = await tools.search_catalogo(effective_query, store)
         elif name == "search_docs":
@@ -110,6 +128,18 @@ async def _collect_context(
                 }]
             else:
                 items = []
+        elif name in ("get_cart", "get_order"):
+            # Las tools de identidad devuelven texto plano ya listo para el
+            # usuario (o un fallback cordial). Se inyecta como contexto.
+            if name == "get_cart":
+                text = await tools.get_cart(
+                    store, account_id, inbox_id, chatwoot_conversation_id
+                )
+            else:
+                text = await tools.get_order(
+                    store, account_id, inbox_id, chatwoot_conversation_id, order_code
+                )
+            items = [{"score": 1.0, "payload": {"text": text}}] if text else []
         else:
             continue
         context.extend(items)
@@ -125,12 +155,19 @@ async def run_agent(
     inbox_id: int,
     user_id: int | None = None,
     channel: str | None = None,
+    chatwoot_conversation_id: int | None = None,
 ) -> AgentResult:
     """Punto de entrada lógico del agente.
 
     `channel` se acepta por paridad con `/chat`, pero la selección de prompt
     por canal sigue viniendo del `system_prompt` de la tienda resuelta por
     `account_id` + `inbox_id` (igual que en el pipeline actual).
+
+    `chatwoot_conversation_id` es el entero puro del `conversation.id` de
+    Chatwoot (distinto del `conversation_id` sintético que usamos para la
+    memoria) y es la única entrada de identidad de las tools `get_cart` /
+    `get_order`. Default `None` para back-compat: sin él, esas tools
+    degradan a un mensaje cordial y el resto del flujo no cambia.
 
     Trazabilidad: la función completa es un span `agent`; los atributos
     correlacionados (conversation/tienda/canal) se propagan a todas las
@@ -155,6 +192,7 @@ async def run_agent(
             "canal": store.channel_name,
             "is_mapped": store.is_mapped,
             "conversation_id": conversation_id,
+            "chatwoot_conversation_id": chatwoot_conversation_id,
         },
     )
 
@@ -167,6 +205,7 @@ async def run_agent(
         classification = await classify_intent_detailed(query, vk=store.bifrost_vk)
         intents = classification.intents
         search_query = classification.params.get("query")
+        order_code = classification.params.get("code")
         intent_str = ", ".join(intents)
         logger.info(
             "Agente: '%s' | tienda=%s (%s) | intents=%s",
@@ -211,7 +250,14 @@ async def run_agent(
             context_items: list[dict] = []
         else:
             context_items, search_used = await _collect_context(
-                query, store, intents, search_query=search_query
+                query,
+                store,
+                intents,
+                search_query=search_query,
+                account_id=account_id,
+                inbox_id=inbox_id,
+                chatwoot_conversation_id=chatwoot_conversation_id,
+                order_code=order_code,
             )
             tools_used.extend(search_used)
 
@@ -219,7 +265,14 @@ async def run_agent(
                 prev_query = _last_user_query(history)
                 if prev_query and prev_query != query:
                     rescued, rescue_used = await _collect_context(
-                        prev_query, store, intents, search_query=search_query
+                        prev_query,
+                        store,
+                        intents,
+                        search_query=search_query,
+                        account_id=account_id,
+                        inbox_id=inbox_id,
+                        chatwoot_conversation_id=chatwoot_conversation_id,
+                        order_code=order_code,
                     )
                     if rescued:
                         context_items = rescued

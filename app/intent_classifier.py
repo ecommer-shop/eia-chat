@@ -15,7 +15,19 @@ logger = logging.getLogger(__name__)
 # pasarla tal cual al endpoint de catálogo (a diferencia de `CATALOGO`, que
 # es búsqueda semántica sobre el embedding). Mantener ambas para no cambiar
 # el contrato del pipeline RAG existente.
-VALID_INTENTS = {"CATALOGO", "BUSCAR", "POLITICAS", "INFO_GENERAL", "CONVERSACIONAL"}
+#
+# `CARRITO` y `PEDIDO` (Fase 1b) son consultas de identidad: el carrito activo
+# y un pedido concreto del comprador de esa conversación de Chatwoot. No son
+# búsquedas de catálogo: `PEDIDO` implica un carrito ya creado.
+VALID_INTENTS = {
+    "CATALOGO",
+    "BUSCAR",
+    "POLITICAS",
+    "INFO_GENERAL",
+    "CONVERSACIONAL",
+    "CARRITO",
+    "PEDIDO",
+}
 
 ROUTER_SYSTEM_PROMPT = """Eres el enrutador de intenciones de la plataforma Ecommer. Clasifica la entrada del usuario en una o varias de estas categorías:
 
@@ -23,11 +35,14 @@ ROUTER_SYSTEM_PROMPT = """Eres el enrutador de intenciones de la plataforma Ecom
 2. "CATALOGO": El usuario quiere comprar o pregunta por productos, características, disponibilidad o precios.
 3. "POLITICAS": Pregunta por envíos, devoluciones, garantías o reglas específicas de una compra.
 4. "INFO_GENERAL": Pregunta sobre qué es Ecommer, cómo funciona, costos de suscripción, pasarelas de pago, facturación, soporte técnico, misión o visión de la empresa.
-5. "CONVERSACIONAL": Saludos, agradecimientos o preguntas totalmente fuera de contexto.
+5. "CARRITO": El usuario pregunta por su carrito actual, lo que ya agregó o el total a pagar de su compra en curso (p. ej. "¿qué tengo en mi carrito?", "ver carrito", "cuánto llevo").
+6. "PEDIDO": El usuario pregunta por el estado, la entrega o el detalle de un pedido YA realizado (p. ej. "dónde está mi pedido", "estado de mi pedido", "mi pedido 1234"). NO uses PEDIDO cuando el usuario quiere comprar o hacer un pedido nuevo: eso es CATALOGO.
+7. "CONVERSACIONAL": Saludos, agradecimientos o preguntas totalmente fuera de contexto.
 
 Si la consulta cubre más de una categoría, responde con las categorías separadas por comas.
 Si la categoría es BUSCAR o CATALOGO, agrega además, en una línea aparte con el prefijo "QUERY:", la consulta de búsqueda extraída (máx. 10 palabras) que usarías para buscar en el catálogo.
-Responde ÚNICAMENTE con las categorías en mayúsculas y, opcionalmente, la línea QUERY."""
+Si la categoría es PEDIDO y el usuario menciona el código o número de su pedido, agrega además, en una línea aparte con el prefijo "CODE:", ese código exactamente como lo escribió.
+Responde ÚNICAMENTE con las categorías en mayúsculas y, opcionalmente, las líneas QUERY y CODE."""
 
 
 @dataclass
@@ -62,6 +77,16 @@ def _parse_query_param(raw: str) -> str | None:
     query = m.group(1).strip().strip('"').strip("'")
     query = re.sub(r"[\n;]+", " ", query).strip()
     return query or None
+
+
+def _parse_code_param(raw: str) -> str | None:
+    """Extrae el código de pedido de la línea `CODE:` si el modelo la emitió."""
+    m = re.search(r"CODE:\s*(.+)", raw, re.IGNORECASE)
+    if not m:
+        return None
+    code = m.group(1).strip().strip('"').strip("'").strip(".").strip()
+    code = re.sub(r"[\n;,]+", " ", code).strip()
+    return code or None
 
 
 def _normalize(text: str) -> str:
@@ -107,6 +132,44 @@ _POLITICAS_RE = re.compile(
     r")\b"
 )
 
+# --- Fase 1b: consultas de identidad (carrito / pedido) -------------------
+# Precisión sobre recall, a propósito: un falso PEDIDO manda la consulta a una
+# tool de identidad que no tiene nada que ver con un pedido real. Los verbos
+# de compra ("quiero hacer un pedido", "comprar") NO deben caer acá; el guard
+# `_NEW_ORDER_RE` los excluye explícitamente porque `_CATALOGO_RE` los captura
+# primero (CATALOGO).
+_CARRITO_RE = re.compile(
+    r"\b(?:mi|el|tu|del) carrito\b"
+    r"|\bcarrito (?:de compras|actual|activo)\b"
+    r"|\b(?:ver|revisar|abrir|mostrar|mostrame|mostrarme|consultar) (?:mi |el )?carrito\b"
+    r"|\bque (?:tengo|hay|tiene|tenes|tienes) en (?:mi |el )?carrito\b"
+    r"|\b(?:agregue|agregue al|tengo agregado|tengo en el) carrito\b"
+)
+
+# Un "pedido nuevo" es una compra: lo atiende el catálogo, no la tool de pedidos.
+_NEW_ORDER_RE = re.compile(
+    r"\b(?:hacer|hago|hice|realizar|realizo|hacerle|nuevo|nueva|otro|otra) (?:un |una |el |la )?pedido\b"
+    r"|\b(?:quiero|queria|quisiera|necesito) (?:hacer |realizar )?(?:un |una |el |la )?pedido\b"
+)
+
+_PEDIDO_RE = re.compile(
+    r"\bmi pedido\b"
+    r"|\bpedido (?:numero|nro|n\u00b0|#)\b"
+    r"|\b(?:estado|seguimiento|detalle|informacion|info) (?:de |del )?(?:mi |el )?pedido\b"
+    r"|\b(?:donde|cuando) (?:esta|llega|sale|arriba|me llega) (?:mi |el )?pedido\b"
+    r"|\b(?:rastrear|seguir|consultar|ver) (?:mi |el )?pedido\b"
+    r"|\bnumero de pedido\b"
+    r"|\b(?:ya|casi) (?:llego|llega|enviaste|salio) (?:mi |el )?pedido\b"
+)
+
+# Código de pedido tal como lo emite Vendure: alfanumérico, con guiones o con
+# prefijo `#`. Se exige al menos un dígito para no capturar palabras sueltas.
+_ORDER_CODE_RE = re.compile(
+    r"(?:\bpedido\b|\borden\b|\bcode\b|\bcodigo\b)[^\w\n]{0,10}?(#?[A-Za-z0-9][A-Za-z0-9\-_]{2,63})\b"
+    r"|#([A-Za-z0-9][A-Za-z0-9\-_]{2,63})\b",
+    re.IGNORECASE,
+)
+
 _INFO_GENERAL_RE = re.compile(
     r"\b(?:"
     r"ecommer|empresa|"
@@ -132,6 +195,23 @@ _CONVERSACIONAL_RE = re.compile(
 )
 
 
+def _extract_order_code(query: str) -> str | None:
+    """Best-effort: código de pedido mencionado en el texto crudo.
+
+    Se aplica sobre el texto original (no el normalizado) para no perder
+    mayúsculas ni guiones, que forman parte del código.
+    """
+    for match in _ORDER_CODE_RE.finditer(query or ""):
+        candidate = next((g for g in match.groups() if g), None)
+        if not candidate:
+            continue
+        code = candidate.strip().lstrip("#")
+        if not any(ch.isdigit() for ch in code):
+            continue
+        return code
+    return None
+
+
 def _keyword_fallback(query: str) -> list[str]:
     q = _normalize(query)
     detected: list[str] = []
@@ -141,6 +221,14 @@ def _keyword_fallback(query: str) -> list[str]:
 
     if _CATALOGO_RE.search(q):
         detected.append("CATALOGO")
+
+    if _CARRITO_RE.search(q):
+        detected.append("CARRITO")
+
+    # `PEDIDO` apunta a un pedido ya realizado; un pedido nuevo es una compra
+    # (CATALOGO) y lo resuelve el catálogo.
+    if _PEDIDO_RE.search(q) and not _NEW_ORDER_RE.search(q):
+        detected.append("PEDIDO")
 
     if _POLITICAS_RE.search(q):
         detected.append("POLITICAS")
@@ -169,7 +257,12 @@ async def classify_intent_detailed(
     if not vk:
         logger.warning("Sin VK Bifrost: clasificación solo por keywords")
         intents = _keyword_fallback(query) or ["CONVERSACIONAL"]
-        return IntentClassification(intents=intents, confidence=0.3)
+        params: dict = {}
+        if "PEDIDO" in intents:
+            code = _extract_order_code(query)
+            if code:
+                params["code"] = code
+        return IntentClassification(intents=intents, params=params, confidence=0.3)
 
     try:
         model = await pick_model(
@@ -211,6 +304,12 @@ async def classify_intent_detailed(
             extracted = _parse_query_param(raw)
             params["query"] = (extracted or query).strip()
 
+        if "PEDIDO" in combined:
+            # Sin código la tool no puede consultar el pedido: se pide el código.
+            code = _parse_code_param(raw) or _extract_order_code(query)
+            if code:
+                params["code"] = code
+
         return IntentClassification(
             intents=combined,
             params=params,
@@ -219,7 +318,12 @@ async def classify_intent_detailed(
     except Exception as e:
         logger.error("Error clasificando intención: %s", e)
         intents = _keyword_fallback(query) or ["CONVERSACIONAL"]
-        return IntentClassification(intents=intents, confidence=0.3)
+        params = {}
+        if "PEDIDO" in intents:
+            code = _extract_order_code(query)
+            if code:
+                params["code"] = code
+        return IntentClassification(intents=intents, params=params, confidence=0.3)
 
 
 async def classify_intent(query: str, vk: str | None = None) -> list[str]:
