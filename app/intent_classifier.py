@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 # `CARRITO` y `PEDIDO` (Fase 1b) son consultas de identidad: el carrito activo
 # y un pedido concreto del comprador de esa conversación de Chatwoot. No son
 # búsquedas de catálogo: `PEDIDO` implica un carrito ya creado.
+#
+# `COMPRAR` es la compra de lo que ya está en el carrito: finalizar/pagar la
+# compra en curso. Es más específica que CATALOGO (que cubre "quiero comprar
+# unos audífonos" = explorar catálogo) porque exige una referencia explícita a
+# cerrar la compra actual (`_FINALIZE_ORDER_RE`).
 VALID_INTENTS = {
     "CATALOGO",
     "BUSCAR",
@@ -27,6 +32,7 @@ VALID_INTENTS = {
     "CONVERSACIONAL",
     "CARRITO",
     "PEDIDO",
+    "COMPRAR",
 }
 
 ROUTER_SYSTEM_PROMPT = """Eres el enrutador de intenciones de la plataforma Ecommer. Clasifica la entrada del usuario en una o varias de estas categorías:
@@ -37,12 +43,14 @@ ROUTER_SYSTEM_PROMPT = """Eres el enrutador de intenciones de la plataforma Ecom
 4. "INFO_GENERAL": Pregunta sobre qué es Ecommer, cómo funciona, costos de suscripción, pasarelas de pago, facturación, soporte técnico, misión o visión de la empresa.
 5. "CARRITO": El usuario pregunta por su carrito actual, lo que ya agregó o el total a pagar de su compra en curso (p. ej. "¿qué tengo en mi carrito?", "ver carrito", "cuánto llevo").
 6. "PEDIDO": El usuario pregunta por el estado, la entrega o el detalle de un pedido YA realizado (p. ej. "dónde está mi pedido", "estado de mi pedido", "mi pedido 1234"). NO uses PEDIDO cuando el usuario quiere comprar o hacer un pedido nuevo: eso es CATALOGO.
-7. "CONVERSACIONAL": Saludos, agradecimientos o preguntas totalmente fuera de contexto.
+7. "COMPRAR": El usuario quiere cerrar la compra de lo que YA tiene en el carrito: finalizar el pedido, pagar, o confirma una compra que el asistente le acaba de ofrecer (p. ej. "finalizar compra", "quiero pagar mi pedido", "dale, confirmo", "sí, con Wompi"). Es distinto de CATALOGO: aquí no busca productos nuevos, quiere pagar el carrito actual.
+8. "CONVERSACIONAL": Saludos, agradecimientos o preguntas totalmente fuera de contexto.
 
 Si la consulta cubre más de una categoría, responde con las categorías separadas por comas.
 Si la categoría es BUSCAR o CATALOGO, agrega además, en una línea aparte con el prefijo "QUERY:", la consulta de búsqueda extraída (máx. 10 palabras) que usarías para buscar en el catálogo.
 Si la categoría es PEDIDO y el usuario menciona el código o número de su pedido, agrega además, en una línea aparte con el prefijo "CODE:", ese código exactamente como lo escribió.
-Responde ÚNICAMENTE con las categorías en mayúsculas y, opcionalmente, las líneas QUERY y CODE."""
+Si la categoría es COMPRAR y el usuario nombra un medio de pago, agrega además, en una línea aparte con el prefijo "PAYMENT:", el medio de pago tal como lo escribió.
+Responde ÚNICAMENTE con las categorías en mayúsculas y, opcionalmente, las líneas QUERY, CODE y PAYMENT."""
 
 
 @dataclass
@@ -87,6 +95,14 @@ def _parse_code_param(raw: str) -> str | None:
     code = m.group(1).strip().strip('"').strip("'").strip(".").strip()
     code = re.sub(r"[\n;,]+", " ", code).strip()
     return code or None
+
+
+def _parse_payment_param(raw: str) -> str | None:
+    """Extrae el medio de pago de la línea `PAYMENT:` (mapeado a su `code`)."""
+    m = re.search(r"PAYMENT:\s*(.+)", raw, re.IGNORECASE)
+    if not m:
+        return None
+    return _extract_payment_method_code(m.group(1))
 
 
 def _normalize(text: str) -> str:
@@ -170,6 +186,62 @@ _ORDER_CODE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# --- COMPRAR: cerrar la compra del carrito actual ------------------------
+# Deliberadamente específica. `_CATALOGO_RE` ya captura "comprar" y
+# `_NEW_ORDER_RE` "quiero hacer un pedido": esos son exploración de catálogo.
+# COMPRAR exige una referencia explícita a FINALIZAR la compra en curso
+# ("finalizar compra", "pagar mi pedido", "cerrar el pedido"), o bien la
+# confirmación de un preview que el asistente ya mostró (`_CONFIRM_ORDER_RE`,
+# que aporta el contexto de que existe un carrito en curso).
+_FINALIZE_ORDER_RE = re.compile(
+    r"\b(?:finalizar|finaliza|finalizo|terminar|termina|cerrar|cierra|concretar|concreta|pagar|paga|pagarlo|pagarla) (?:la |mi |el |tu )?(?:compra|pedido|orden|carrito)\b"
+    r"|\b(?:finalizar|finaliza|finalizo|cerrar|cierra) (?:la )?compra\b"
+    r"|\b(?:quiero|queria|quisiera|necesito|deseo) (?:pagar|finalizar|cerrar|concretar) (?:ya |ahora |la |mi |el |con |por )?\w{0,30}"
+    r"|\b(?:pasar|paso|pasar a|ir a) (?:pagar|pago|checkout|finalizar)\b"
+    r"|\bpagar (?:mi |el |con )?(?:carrito|pedido|orden|compra|tarjeta|wompi|contraentrega|transferencia)\b"
+    r"|\b(?:listo|dale|ok|okey|vale)\b,? (?:finaliza|paga|cierra|confirm)[a-z]*\b"
+)
+
+# Confirmación (turno 2 del flujo de place_order). Sin el estado pendiente no
+# dispara nada por sí sola: `core` solo la usa cuando hay `pending_order`.
+_CONFIRM_ORDER_RE = re.compile(
+    r"^\s*(?:si|dale|ok|okey|va|vale|listo|confirmo|confirmado|confirmamos|autorizo|autorizado|de acuerdo|perfecto|adelante|procede|proceda|sandbox)\b"
+    r"|\b(?:si|dale|ok|okey|vale|listo|de acuerdo|perfecto|adelante)\b[\s,!.]{0,3}(?:confirmo|confirmado|confirmame|confirma|confirmar|autorizo|autorizado|procede|proceda|pagalo|pagala|pagar|finaliza|finalizar|dale)\b"
+    r"|\b(?:confirmo|confirma|confirmado|autorizo|autorizado|proceda|procede|apruebo|aprobado)\b"
+    r"|\b(?:si|claroi)\b",
+    re.IGNORECASE,
+)
+
+# Medio de pago nombrado por el comprador. Hoy la tienda solo tiene `wompi`;
+# se reconocen las variantes con que la gente lo escribe.
+_PAYMENT_METHOD_RE = re.compile(
+    r"\b(wompi|woompi|wompi colombia)\b", re.IGNORECASE
+)
+
+
+def _extract_payment_method_code(text: str) -> str | None:
+    """Código de método de pago mencionado en el texto, o `None`.
+
+    Los alias se mapean al `code` real del PaymentMethod de Vendure, que es
+    lo que el backend espera en `paymentMethodCode`.
+    """
+    m = _PAYMENT_METHOD_RE.search(text or "")
+    if not m:
+        return None
+    return "wompi"
+
+
+def _is_confirmation(query: str) -> bool:
+    """Señal de confirmación (turno 2 del flujo de compra).
+
+    Es solo una señal: la decisión de ejecutar el pago la toma `core` cuando
+    además existe un `pending_order`. Por eso se aplica sobre el texto
+    normalizado pero NO como intención en `_keyword_fallback` (un "sí" suelto
+    no es una intención de compra por sí mismo).
+    """
+    return bool(_CONFIRM_ORDER_RE.search(_normalize(query or "")))
+
+
 _INFO_GENERAL_RE = re.compile(
     r"\b(?:"
     r"ecommer|empresa|"
@@ -230,6 +302,17 @@ def _keyword_fallback(query: str) -> list[str]:
     if _PEDIDO_RE.search(q) and not _NEW_ORDER_RE.search(q):
         detected.append("PEDIDO")
 
+    # COMPRAR (finalizar la compra del carrito) se evalúa antes de sumar
+    # CATALOGO: si el comprador está cerrando la compra no está explorando
+    # catálogo, y CATALOGO dispararía una búsqueda que no aporta nada.
+    finalizing = bool(_FINALIZE_ORDER_RE.search(q))
+    if finalizing:
+        detected.append("COMPRAR")
+        if "CATALOGO" in detected:
+            detected.remove("CATALOGO")
+        if "BUSCAR" in detected:
+            detected.remove("BUSCAR")
+
     if _POLITICAS_RE.search(q):
         detected.append("POLITICAS")
 
@@ -240,6 +323,40 @@ def _keyword_fallback(query: str) -> list[str]:
         detected.append("CONVERSACIONAL")
 
     return list(dict.fromkeys(detected))
+
+
+def _build_params(intents: list[str], raw: str | None, query: str) -> dict:
+    """Parámetros derivados de las intenciones detectadas.
+
+    Compartido por el camino LLM y el fallback por keywords: la query de
+    búsqueda, el código de pedido, el medio de pago y la señal de confirmación
+    del turno 2 (`confirmation`) no dependen de quién clasificó.
+    """
+    params: dict = {}
+    combined = list(intents)
+
+    if "BUSCAR" in combined or "CATALOGO" in combined:
+        # La query se extrae del raw original (preserva mayúsculas/acentos).
+        extracted = _parse_query_param(raw or "") or _parse_query_param(query)
+        params["query"] = (extracted or query).strip()
+
+    if "PEDIDO" in combined:
+        # Sin código la tool no puede consultar el pedido: se pide el código.
+        code = _parse_code_param(raw or "") or _extract_order_code(query)
+        if code:
+            params["code"] = code
+
+    if "COMPRAR" in combined:
+        # `payment_method`: el comprador nombró un medio de pago (turno 2 del
+        # flujo de place_order). `confirmation`: señal de confirmación, que
+        # `core` solo usa si además hay un `pending_order`.
+        payment = _parse_payment_param(raw or "") or _extract_payment_method_code(query)
+        if payment:
+            params["payment_method"] = payment
+    if _is_confirmation(query):
+        params["confirmation"] = True
+
+    return params
 
 
 @observe(as_type="generation", name="classify_intent")
@@ -257,11 +374,7 @@ async def classify_intent_detailed(
     if not vk:
         logger.warning("Sin VK Bifrost: clasificación solo por keywords")
         intents = _keyword_fallback(query) or ["CONVERSACIONAL"]
-        params: dict = {}
-        if "PEDIDO" in intents:
-            code = _extract_order_code(query)
-            if code:
-                params["code"] = code
+        params = _build_params(intents, None, query)
         return IntentClassification(intents=intents, params=params, confidence=0.3)
 
     try:
@@ -298,17 +411,7 @@ async def classify_intent_detailed(
         llm_only = [i for i in detected if i not in fallback]
         confidence = 0.9 if llm_only or detected else 0.5
 
-        params: dict = {}
-        if "BUSCAR" in combined or "CATALOGO" in combined:
-            # La query se extrae del raw original (preserva mayúsculas/acentos).
-            extracted = _parse_query_param(raw)
-            params["query"] = (extracted or query).strip()
-
-        if "PEDIDO" in combined:
-            # Sin código la tool no puede consultar el pedido: se pide el código.
-            code = _parse_code_param(raw) or _extract_order_code(query)
-            if code:
-                params["code"] = code
+        params = _build_params(combined, raw, query)
 
         return IntentClassification(
             intents=combined,
@@ -318,11 +421,7 @@ async def classify_intent_detailed(
     except Exception as e:
         logger.error("Error clasificando intención: %s", e)
         intents = _keyword_fallback(query) or ["CONVERSACIONAL"]
-        params = {}
-        if "PEDIDO" in intents:
-            code = _extract_order_code(query)
-            if code:
-                params["code"] = code
+        params = _build_params(intents, None, query)
         return IntentClassification(intents=intents, params=params, confidence=0.3)
 
 

@@ -262,3 +262,229 @@ class TestGetOrder:
 
         assert asyncio.run(identity_client.get_order(1, 2, 42, "CART-10")) is None
         assert recording_client.instances == []
+
+
+# ---------------------------------------------------------------------------
+# place_order — pago en dos tiempos (preview / ejecución)
+# ---------------------------------------------------------------------------
+
+def _place_order_body(status="confirmation_required", confirmed=False, order=None, **extra):
+    body = {"status": status, "confirmed": confirmed, "order": order}
+    body.update(extra)
+    return body
+
+
+class TestPlaceOrder:
+    def test_preview_devuelve_status_y_order(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(
+            200, _place_order_body(order=_order())
+        )
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", False))
+
+        assert result.ok is True
+        assert result.status == "confirmation_required"
+        assert result.confirmed is False
+        assert result.is_confirmation_required is True
+        assert result.order["code"] == "CART-10"
+        assert result.order["totalWithTaxDecimal"] == "185.00"
+
+    def test_body_y_headers_firmados(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        monkeypatch.setattr(identity_client, "_now_seconds", lambda: 1700000000)
+
+        asyncio.run(identity_client.place_order(1, 2, 42, "wompi", True))
+
+        call = recording_client.instances[0].calls[0]
+        assert call["path"] == "/api/assistant/identity/place-order"
+        assert json.loads(call["content"]) == {
+            "conversation_id": 42,
+            "account_id": 1,
+            "inbox_id": 2,
+            "paymentMethodCode": "wompi",
+            "confirm": True,
+        }
+        assert call["headers"]["x-assistant-key-id"] == "eia-chat"
+        assert call["headers"]["x-assistant-timestamp"] == "1700000000"
+        assert call["headers"]["x-assistant-signature"] == identity_client._sign(
+            1700000000, call["content"]
+        )
+
+    def test_confirm_false_viaja_como_booleano(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(200, _place_order_body(order=_order()))
+
+        asyncio.run(identity_client.place_order(1, 2, 42, "wompi", False))
+
+        body = json.loads(recording_client.instances[0].calls[0]["content"])
+        assert body["confirm"] is False
+
+    def test_payment_metadata_opcional(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(
+            200, _place_order_body(status="placed", confirmed=True, order=_order())
+        )
+
+        asyncio.run(
+            identity_client.place_order(
+                1, 2, 42, "wompi", True, payment_metadata={"reference": "abc"}
+            )
+        )
+
+        body = json.loads(recording_client.instances[0].calls[0]["content"])
+        assert body["paymentMetadata"] == {"reference": "abc"}
+
+    def test_sin_metadata_no_envia_la_clave(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(200, _place_order_body(order=_order()))
+
+        asyncio.run(identity_client.place_order(1, 2, 42, "wompi", False))
+
+        body = json.loads(recording_client.instances[0].calls[0]["content"])
+        assert "paymentMetadata" not in body
+
+    def test_placed(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(
+            200, _place_order_body(status="placed", confirmed=True, order=_order())
+        )
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", True))
+
+        assert result.is_placed is True
+        assert result.confirmed is True
+        assert result.order["code"] == "CART-10"
+
+    def test_awaiting_payment(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(
+            200,
+            _place_order_body(
+                status="awaiting_payment", confirmed=True, order=_order(), message="Pendiente"
+            ),
+        )
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", True))
+
+        assert result.is_awaiting_payment is True
+        assert result.message == "Pendiente"
+
+    def test_sin_carrito_200_order_null(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(
+            200,
+            {
+                "status": "confirmation_required",
+                "confirmed": False,
+                "order": None,
+                "message": "No hay carrito activo.",
+            },
+        )
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", False))
+
+        assert result.ok is True
+        assert result.order is None
+        assert result.message == "No hay carrito activo."
+
+    def test_400_devuelve_error_con_mensaje_del_backend(self, monkeypatch, recording_client):
+        """Un 400 accionable no lanza: se degrada a `status=\"error\"`."""
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(
+            400, {"message": "El pago fue rechazado por Wompi."}, text="bad"
+        )
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", True))
+
+        assert result.ok is False
+        assert result.status == "error"
+        assert result.confirmed is False
+        assert result.order is None
+        assert result.message == "El pago fue rechazado por Wompi."
+
+    def test_404_carrito_desaparecido_no_lanza(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(404, None, text="not found")
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", True))
+
+        assert result.ok is False
+        assert result.status == "error"
+        assert result.order is None
+
+    def test_401_no_lanza(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(401, None, text="bad signature")
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", True))
+
+        assert result.status == "error"
+
+    def test_error_de_red_no_lanza(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.raises = RuntimeError("boom")
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", True))
+
+        assert result.status == "error"
+        assert result.order is None
+
+    def test_respuesta_no_json_no_lanza(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(200, None, text="<html>")
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", False))
+
+        assert result.status == "error"
+
+    def test_200_sin_status_se_asume_preview(self, monkeypatch, recording_client):
+        """Sin `status` no se da la compra por hecha: se trata como preview."""
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(200, {"order": _order()})
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", True))
+
+        assert result.status == "confirmation_required"
+        assert result.confirmed is False
+        assert result.order["code"] == "CART-10"
+
+    def test_sin_payment_method_no_llama_http(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "   ", True))
+
+        assert result.status == "error"
+        assert recording_client.instances == []
+
+    def test_payment_method_demasiado_largo_no_llama_http(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch)
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "x" * 65, True))
+
+        assert result.status == "error"
+        assert recording_client.instances == []
+
+    def test_sin_config_no_llama_http(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch, ASSISTANT_CATALOG_ENABLED=False)
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", False))
+
+        assert result.status == "error"
+        assert recording_client.instances == []
+
+    def test_sin_secret_no_llama_http(self, monkeypatch, recording_client):
+        _frozen_settings(monkeypatch, ASSISTANT_CATALOG_SECRET="")
+
+        result = asyncio.run(identity_client.place_order(1, 2, 42, "wompi", False))
+
+        assert result.status == "error"
+        assert recording_client.instances == []
+
+    def test_get_cart_sigue_devolviendo_none_en_404(self, monkeypatch, recording_client):
+        """El refactor de `_post` no cambia la semántica de get_cart/get_order."""
+        _frozen_settings(monkeypatch)
+        recording_client.response = _FakeResponse(404, {"message": "anonymous"}, text="x")
+
+        assert asyncio.run(identity_client.get_cart(1, 2, 42)) is None
+        assert asyncio.run(identity_client.get_order(1, 2, 42, "CART-10")) is None

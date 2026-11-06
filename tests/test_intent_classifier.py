@@ -14,9 +14,12 @@ from app.intent_classifier import (
     classify_intent,
     classify_intent_detailed,
     _extract_order_code,
+    _extract_payment_method_code,
+    _is_confirmation,
     _keyword_fallback,
     _parse_code_param,
     _parse_intent_output,
+    _parse_payment_param,
     _parse_query_param,
 )
 
@@ -278,3 +281,120 @@ class TestBackwardCompat:
         intents = asyncio.run(classify_intent("busca kz", vk="test-vk"))
         assert isinstance(intents, list)
         assert "BUSCAR" in intents
+
+
+# ---------------------------------------------------------------------------
+# COMPRAR — finalizar la compra del carrito actual
+# ---------------------------------------------------------------------------
+
+class TestComprarIntent:
+    def test_en_valid_intents(self):
+        from app.intent_classifier import VALID_INTENTS
+
+        assert "COMPRAR" in VALID_INTENTS
+
+    def test_parse_reconoce_comprar(self):
+        assert _parse_intent_output("COMPRAR") == ["COMPRAR"]
+
+    def test_router_prompt_documenta_comprar(self):
+        from app.intent_classifier import ROUTER_SYSTEM_PROMPT
+
+        assert "COMPRAR" in ROUTER_SYSTEM_PROMPT
+        assert "PAYMENT:" in ROUTER_SYSTEM_PROMPT
+
+    def test_finalizar_compra(self):
+        assert _keyword_fallback("quiero finalizar mi compra") == ["COMPRAR"]
+
+    def test_finalizar_compra_sin_pronobre(self):
+        assert "COMPRAR" in _keyword_fallback("finalizar compra")
+
+    def test_pagar_el_pedido(self):
+        assert "COMPRAR" in _keyword_fallback("quiero pagar mi pedido")
+
+    def test_cerrar_la_compra(self):
+        assert "COMPRAR" in _keyword_fallback("cerrar la compra por favor")
+
+    def test_comprar_no_dispara_catalogo(self):
+        """Finalizar la compra no es explorar catálogo: no debe buscar productos."""
+        intents = _keyword_fallback("quiero finalizar mi compra")
+        assert "CATALOGO" not in intents
+        assert "BUSCAR" not in intents
+
+    def test_quiero_hacer_un_pedido_sigue_siendo_catalogo(self):
+        intents = _keyword_fallback("quiero hacer un pedido")
+        assert "COMPRAR" not in intents
+        assert "CATALOGO" in intents
+
+    def test_quiero_comprar_audifonos_sigue_siendo_catalogo(self):
+        intents = _keyword_fallback("quiero comprar unos audífonos")
+        assert "COMPRAR" not in intents
+        assert "CATALOGO" in intents
+
+    def test_consultar_carrito_no_es_comprar(self):
+        assert "COMPRAR" not in _keyword_fallback("¿qué tengo en mi carrito?")
+
+    def test_estado_del_pedido_no_es_comprar(self):
+        intents = _keyword_fallback("¿dónde está mi pedido?")
+        assert "COMPRAR" not in intents
+        assert "PEDIDO" in intents
+
+    def test_sin_vk_comprar(self):
+        result = asyncio.run(classify_intent_detailed("finalizar mi compra", vk=None))
+        assert "COMPRAR" in result.intents
+        assert result.confidence < 0.4
+
+
+# ---------------------------------------------------------------------------
+# Confirmación (turno 2) y medio de pago
+# ---------------------------------------------------------------------------
+
+class TestConfirmationSignal:
+    @pytest.mark.parametrize("query", [
+        "sí", "si", "dale", "confirmo", "confirmado", "autorizo", "listo, confirmá",
+        "dale, confirmo", "ok, procede", "de acuerdo", "adelante", "sí, con Wompi",
+    ])
+    def test_detecta_confirmacion(self, query):
+        assert _is_confirmation(query) is True
+
+    @pytest.mark.parametrize("query", [
+        "no", "mejor no", "¿cuánto sale el envío?", "quiero otro producto",
+        "todavía no", "¿tienen audífonos?",
+    ])
+    def test_no_detecta_confirmacion(self, query):
+        assert _is_confirmation(query) is False
+
+    def test_confirmacion_no_es_intencion_por_si_sola(self):
+        """Un \"sí\" suelto sin pendiente no debe convertirse en intención."""
+        assert _keyword_fallback("sí") == []
+
+
+class TestPaymentMethod:
+    @pytest.mark.parametrize("query", ["wompi", "Wompi", "WOMPI", "con wompi por favor"])
+    def test_extrae_wompi(self, query):
+        assert _extract_payment_method_code(query) == "wompi"
+
+    def test_sin_medio_de_pago(self):
+        assert _extract_payment_method_code("confirmo la compra") is None
+
+    def test_parse_payment_param(self):
+        assert _parse_payment_param("COMPRAR\nPAYMENT: Wompi") == "wompi"
+
+    def test_parse_payment_param_ausente(self):
+        assert _parse_payment_param("COMPRAR") is None
+
+    def test_con_vk_confirmation_en_params(self):
+        result = asyncio.run(classify_intent_detailed("dale, confirmo", vk=None))
+        assert result.params.get("confirmation") is True
+
+    def test_con_vk_payment_method_en_params(self, monkeypatch, mock_llm):
+        _set_llm(monkeypatch, "COMPRAR\nPAYMENT: Wompi")
+        result = asyncio.run(
+            classify_intent_detailed("confirmo, pagá con Wompi", vk="test-vk")
+        )
+        assert "COMPRAR" in result.intents
+        assert result.params["payment_method"] == "wompi"
+
+    def test_con_vk_payment_method_del_texto(self, monkeypatch, mock_llm):
+        _set_llm(monkeypatch, "COMPRAR")
+        result = asyncio.run(classify_intent_detailed("pagar con wompi", vk="test-vk"))
+        assert result.params["payment_method"] == "wompi"

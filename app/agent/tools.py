@@ -16,8 +16,10 @@ from langfuse import get_client, observe
 from app.clients import get_llm, invalidate_allowed_models, pick_model
 from app.config import settings
 from app.catalog_client import search_products as search_catalog_remote
+from app.identity_client import PlaceOrderResult
 from app.identity_client import get_cart as get_cart_remote
 from app.identity_client import get_order as get_order_remote
+from app.identity_client import place_order as place_order_remote
 from app.grounding import apply_grounding
 from app.llm_generator import build_prompt
 from app.memory import get_history
@@ -134,6 +136,27 @@ ORDER_NEEDS_CODE_MESSAGE = (
 ORDER_NOT_FOUND_MESSAGE = (
     "No encuentro un pedido con ese número en tu cuenta. "
     "Revisá el código y volvé a intentarlo, o iniciá sesión con la cuenta con la que compraste."
+)
+# Fallbacks cordiales de la compra (place_order). La compra NUNCA se ejecuta
+# sin confirmación explícita del comprador: el primer turno es solo preview.
+PLACE_ORDER_NOT_IDENTIFIED_MESSAGE = (
+    "No puedo finalizar la compra porque no estás identificado. "
+    "Iniciá sesión en la tienda para que pueda ayudarte con el pago."
+)
+PLACE_ORDER_EMPTY_CART_MESSAGE = (
+    "No tenés un carrito activo para pagar en este momento. "
+    "Agregá productos a tu carrito y con gusto te ayudo a finalizar la compra."
+)
+PLACE_ORDER_ERROR_MESSAGE = (
+    "No pude completar el pago en este momento. "
+    "Tus productos siguen en el carrito y no se cobró nada. "
+    "¿Querés que lo intentemos de nuevo o preferís que te contacte una persona del equipo?"
+)
+PLACE_ORDER_PREVIEW_INTRO = (
+    "Esto es lo que vas a pagar si confirmás"
+)
+PLACE_ORDER_CONFIRM_QUESTION = (
+    "¿Confirmás la compra? ¿Con qué medio de pago querés hacerlo?"
 )
 
 # Nombre legible del estado del pedido (Vendure `order.state`).
@@ -297,6 +320,145 @@ async def get_order(
     return _format_order(order)
 
 
+def format_place_order_preview(
+    result: PlaceOrderResult,
+    payment_method_code: str | None = None,
+) -> str:
+    """Preview cordial del turno 1: total exacto + pregunta de confirmación.
+
+    El texto se arma con el `order` serializado que devuelve el backend, así el
+    monto que ve el comprador es exactamente el que va a pagar (nada de
+    estimaciones del LLM).
+    """
+    order = result.order
+    if order is None:
+        return PLACE_ORDER_EMPTY_CART_MESSAGE
+
+    total = _money(order, "totalWithTax", "totalWithTaxDecimal")
+    lines = [line for line in (order.get("lines") or []) if isinstance(line, dict)]
+    detalle = ""
+    if lines:
+        partes: list[str] = []
+        for line in lines:
+            variant = line.get("productVariant") or {}
+            name = variant.get("name") or "Producto"
+            quantity = line.get("quantity")
+            partes.append(f"{name} x{quantity}" if quantity else str(name))
+        detalle = " Incluye: " + "; ".join(partes) + "."
+
+    message = PLACE_ORDER_PREVIEW_INTRO + ":"
+    if total:
+        message += f" {total}."
+    message += detalle
+    if result.message:
+        message += f" {result.message}"
+    return f"{message} {PLACE_ORDER_CONFIRM_QUESTION}".strip()
+
+
+def format_place_order_result(
+    result: PlaceOrderResult,
+    payment_method_code: str | None = None,
+) -> str:
+    """Resultado final del turno 2 (placed / awaiting_payment / error).
+
+    Éxito = texto determinista con el código y el total del pedido real: no se
+    pasa por el LLM para no arriesgar una confirmación de pago inventada.
+    """
+    if result.status == "error":
+        base = result.message or PLACE_ORDER_ERROR_MESSAGE
+        if result.message and result.message != PLACE_ORDER_ERROR_MESSAGE:
+            base += f" {PLACE_ORDER_ERROR_MESSAGE}"
+        return base
+
+    order = result.order
+    if order is None:
+        if result.message:
+            return result.message
+        return PLACE_ORDER_EMPTY_CART_MESSAGE
+
+    code = order.get("code") or ""
+    total = _money(order, "totalWithTax", "totalWithTaxDecimal")
+
+    if result.status == "placed":
+        message = "¡Listo! Tu compra quedó confirmada"
+        if code:
+            message += f" con el número de pedido {code}"
+        if total:
+            message += f" por {total}"
+        message += ". Te enviamos el detalle por correo."
+        return message
+
+    if result.status == "awaiting_payment":
+        message = "Tu pedido"
+        if code:
+            message += f" {code}"
+        message += " quedó registrado y está pendiente de pago"
+        if total:
+            message += f" por {total}"
+        message += "."
+        if result.message:
+            message += f" {result.message}"
+        return message
+
+    # Estado inesperado: se reporta lo que dijo el backend sin inventar éxito.
+    base = "El pago no se completó"
+    if result.message:
+        base += f": {result.message}"
+    return base + "."
+
+
+@observe(as_type="tool")
+async def place_order(
+    store: StoreConfig,
+    account_id: int | None,
+    inbox_id: int | None,
+    chatwoot_conversation_id: int | None,
+    confirm: bool = False,
+    payment_method_code: str | None = None,
+    payment_metadata: dict | None = None,
+) -> PlaceOrderResult:
+    """Pago del carrito activo: preview (`confirm=False`) o ejecución.
+
+    Devuelve siempre un `PlaceOrderResult` (nunca lanza) para que `core`
+    decida entre mostrar un preview y ejecutar la compra: el texto cordial se
+    arma con `format_place_order_preview` / `format_place_order_result` y el
+    estado que el agente necesita queda en el objeto.
+
+    La compra nunca se dispara desde acá: `core` pasa `confirm=True` solo
+    cuando el comprador confirmó explícitamente en el turno siguiente.
+    """
+    if chatwoot_conversation_id is None or account_id is None:
+        logger.info("Tool place_order :: sin identidad de conversación — degrada")
+        return PlaceOrderResult(
+            status="error",
+            confirmed=False,
+            message=PLACE_ORDER_NOT_IDENTIFIED_MESSAGE,
+        )
+
+    code = (payment_method_code or settings.ASSISTANT_PAYMENT_METHOD_CODE or "").strip()
+    logger.info(
+        "Tool place_order :: store=%s account=%s inbox=%s conversation=%s confirm=%s code=%s",
+        store.store_name, account_id, inbox_id, chatwoot_conversation_id,
+        bool(confirm), code or "-",
+    )
+    try:
+        return await place_order_remote(
+            account_id,
+            inbox_id,
+            chatwoot_conversation_id,
+            code,
+            bool(confirm),
+            payment_metadata,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.error("place_order: fallo inesperado del cliente de identidad: %s", e)
+        return PlaceOrderResult(
+            status="error",
+            confirmed=False,
+            message=PLACE_ORDER_ERROR_MESSAGE,
+        )
+
+
 def _history_mentions_products(history: list[dict]) -> bool:
     for msg in history:
         if msg.get("role") != "assistant":
@@ -438,6 +600,7 @@ TOOL_REGISTRY: dict[str, Callable[..., Awaitable[object]]] = {
     "get_memory": get_memory,
     "get_cart": get_cart,
     "get_order": get_order,
+    "place_order": place_order,
     "answer": answer,
     "escalate": escalate,
 }

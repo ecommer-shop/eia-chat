@@ -802,3 +802,463 @@ class TestIdentityDispatch:
 
         assert result.answer == "Respuesta."
         assert not any(t in result.tools_used for t in ("get_cart", "get_order"))
+
+# ---------------------------------------------------------------------------
+# COMPRAR — place_order en dos turnos (preview + confirmación)
+# ---------------------------------------------------------------------------
+
+from app.identity_client import PlaceOrderResult  # noqa: E402
+
+_PREVIEW_ORDER = {
+    "code": "CART-10",
+    "state": "AddingItems",
+    "currencyCode": "COP",
+    "totalQuantity": 2,
+    "totalWithTaxDecimal": "185.00",
+    "lines": [
+        {
+            "quantity": 2,
+            "linePriceWithTaxDecimal": "185.00",
+            "productVariant": {"name": "KZ Castor Pro"},
+        }
+    ],
+}
+
+_PLACED_ORDER = {
+    **_PREVIEW_ORDER,
+    "code": "MP-1234",
+    "state": "PaymentSettled",
+}
+
+_STORE = SimpleNamespace(store_name="ecommer", system_prompt="Eres Simetria.")
+
+
+def _preview(**overrides):
+    base = dict(
+        status="confirmation_required",
+        confirmed=False,
+        order=dict(_PREVIEW_ORDER),
+    )
+    base.update(overrides)
+    return PlaceOrderResult(**base)
+
+
+def _placed(**overrides):
+    base = dict(
+        status="placed",
+        confirmed=True,
+        order=dict(_PLACED_ORDER),
+    )
+    base.update(overrides)
+    return PlaceOrderResult(**base)
+
+
+@pytest.fixture
+def pending_store(monkeypatch):
+    """Estado pendiente en proceso: reemplaza Redis para el flujo multi-turno."""
+    state: dict[str, dict] = {}
+
+    def _save(cid, data):
+        state[cid] = dict(data)
+
+    def _get(cid):
+        data = state.get(cid)
+        return dict(data) if data else None
+
+    def _clear(cid):
+        state.pop(cid, None)
+
+    monkeypatch.setattr("app.agent.core.save_pending_order", _save)
+    monkeypatch.setattr("app.agent.core.get_pending_order", _get)
+    monkeypatch.setattr("app.agent.core.clear_pending_order", _clear)
+    return state
+
+
+def _recording_place_order(calls, result):
+    """Doble de `identity_client.place_order` (la firma que llama `tools`)."""
+    async def _fake(account_id, inbox_id, conversation_id, payment_method_code,
+                    confirm, payment_metadata=None):
+        calls.append({
+            "account_id": account_id,
+            "inbox_id": inbox_id,
+            "chatwoot_conversation_id": conversation_id,
+            "confirm": confirm,
+            "payment_method_code": payment_method_code,
+        })
+        if callable(result):
+            return result(confirm=confirm, payment_method_code=payment_method_code)
+        return result
+    return _fake
+
+
+def _classify_with_params(intents, params=None):
+    async def _classify(query, *args, **kwargs):
+        return SimpleNamespace(intents=list(intents), params=dict(params or {}))
+    return _classify
+
+
+class TestPlaceOrderTool:
+    def test_registrada_en_el_registry(self):
+        assert "place_order" in tools.TOOL_REGISTRY
+        assert tools.TOOL_REGISTRY["place_order"] is tools.place_order
+
+    def test_sin_identidad_degrada_sin_llamar_backend(self, monkeypatch):
+        async def _boom(*args, **kwargs):
+            raise AssertionError("Sin chatwoot_conversation_id no hay llamada de identidad")
+
+        monkeypatch.setattr(tools, "place_order_remote", _boom)
+
+        result = asyncio.run(tools.place_order(None, 1, 2, None, confirm=False))
+
+        assert result.status == "error"
+        assert result.order is None
+        assert "no estás identificado" in result.message
+
+    def test_usa_el_metodo_de_pago_pedido(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(tools, "place_order_remote", _recording_place_order(calls, _preview()))
+
+        asyncio.run(
+            tools.place_order(_STORE, 1, 2, 42, confirm=False, payment_method_code="wompi")
+        )
+
+        assert calls[0]["payment_method_code"] == "wompi"
+        assert calls[0]["confirm"] is False
+
+    def test_sin_metodo_de_pago_usa_el_fallback_de_config(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(tools, "place_order_remote", _recording_place_order(calls, _preview()))
+        monkeypatch.setattr(tools.settings, "ASSISTANT_PAYMENT_METHOD_CODE", "wompi", raising=False)
+
+        asyncio.run(tools.place_order(_STORE, 1, 2, 42, confirm=False))
+
+        assert calls[0]["payment_method_code"] == "wompi"
+
+    def test_error_inesperado_devuelve_resultado_cordial(self, monkeypatch):
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("red caída")
+
+        monkeypatch.setattr(tools, "place_order_remote", _boom)
+
+        result = asyncio.run(tools.place_order(_STORE, 1, 2, 42, confirm=True))
+
+        assert result.status == "error"
+        assert "no se cobró nada" in result.message
+
+    def test_preview_formatea_total_y_pregunta(self):
+        text = tools.format_place_order_preview(_preview())
+
+        assert "185.00" in text
+        assert "KZ Castor Pro" in text
+        assert "¿Confirmás la compra?" in text
+
+    def test_preview_sin_carrito_pide_agregar(self):
+        text = tools.format_place_order_preview(
+            PlaceOrderResult(status="confirmation_required", confirmed=False, order=None)
+        )
+        assert "carrito activo" in text
+
+    def test_placed_formatea_codigo_y_total(self):
+        text = tools.format_place_order_result(_placed())
+
+        assert "MP-1234" in text
+        assert "185.00" in text
+        assert "confirmada" in text
+
+    def test_awaiting_payment_formatea_pendiente(self):
+        text = tools.format_place_order_result(
+            PlaceOrderResult(
+                status="awaiting_payment", confirmed=True, order=dict(_PLACED_ORDER)
+            )
+        )
+        assert "pendiente de pago" in text
+
+    def test_error_formatea_accionable(self):
+        text = tools.format_place_order_result(
+            PlaceOrderResult(status="error", confirmed=False, message="Pago rechazado.")
+        )
+        assert "Pago rechazado." in text
+        assert "no se cobró nada" in text
+
+
+class TestMultiTurnoCompra:
+    def test_turno_1_es_solo_preview(self, monkeypatch, pending_store):
+        calls = []
+        monkeypatch.setattr(tools, "place_order_remote", _recording_place_order(calls, _preview()))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"]))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", _fail_never)
+
+        result = _run("quiero finalizar mi compra", conversation_id="buy-1",
+                      chatwoot_conversation_id=42)
+
+        # Nunca se cobra en el turno 1.
+        assert calls == [{
+            "account_id": 1,
+            "inbox_id": 2,
+            "chatwoot_conversation_id": 42,
+            "confirm": False,
+            "payment_method_code": "wompi",
+        }]
+        assert "place_order" in result.tools_used
+        assert "answer" not in result.tools_used
+        assert "185.00" in result.answer
+        assert "¿Confirmás la compra?" in result.answer
+        assert result.escalado is False
+
+    def test_turno_1_guarda_estado_pendiente(self, monkeypatch, pending_store):
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order([], _preview()))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"]))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", _fail_never)
+
+        _run("finalizar compra", conversation_id="buy-2", chatwoot_conversation_id=42)
+
+        pending = pending_store["buy-2"]
+        assert pending["paymentMethodCode"] == "wompi"
+        assert pending["account_id"] == 1
+        assert pending["inbox_id"] == 2
+        assert pending["chatwoot_conversation_id"] == 42
+        assert pending["order"]["totalWithTaxDecimal"] == "185.00"
+        assert pending["status"] == "confirmation_required"
+
+    def test_turno_2_confirma_y_ejecuta_el_pago(self, monkeypatch, pending_store):
+        calls = []
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order(calls, _placed()))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"], {"confirmation": True}))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", _fail_never)
+
+        # Turno 1: preview y estado pendiente.
+        _run("quiero finalizar mi compra", conversation_id="buy-3",
+             chatwoot_conversation_id=42)
+        calls.clear()
+
+        # Turno 2: confirmación explícita.
+        result = _run("sí, confirmo", conversation_id="buy-3",
+                      chatwoot_conversation_id=42)
+
+        assert calls == [{
+            "account_id": 1,
+            "inbox_id": 2,
+            "chatwoot_conversation_id": 42,
+            "confirm": True,
+            "payment_method_code": "wompi",
+        }]
+        assert "place_order" in result.tools_used
+        assert "answer" not in result.tools_used
+        assert "MP-1234" in result.answer
+        # El pendiente se limpia al terminar el flujo.
+        assert "buy-3" not in pending_store
+
+    def test_turno_2_toma_el_metodo_mencionado(self, monkeypatch, pending_store):
+        calls = []
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order(calls, _placed()))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"], {"confirmation": True}))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", _fail_never)
+
+        _run("finalizar compra", conversation_id="buy-4", chatwoot_conversation_id=42)
+        calls.clear()
+
+        async def _classify_with_payment(query, *args, **kwargs):
+            return SimpleNamespace(
+                intents=["COMPRAR"], params={"confirmation": True, "payment_method": "wompi"}
+            )
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed", _classify_with_payment)
+
+        _run("sí, con Wompi", conversation_id="buy-4", chatwoot_conversation_id=42)
+
+        assert calls[0]["confirm"] is True
+        assert calls[0]["payment_method_code"] == "wompi"
+
+    def test_turno_2_awaiting_payment(self, monkeypatch, pending_store):
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order([], _preview()))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"]))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", _fail_never)
+
+        _run("finalizar compra", conversation_id="buy-5", chatwoot_conversation_id=42)
+
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order([], PlaceOrderResult(
+                                status="awaiting_payment",
+                                confirmed=True,
+                                order=dict(_PLACED_ORDER),
+                            )))
+
+        result = _run("dale", conversation_id="buy-5", chatwoot_conversation_id=42)
+
+        assert "pendiente de pago" in result.answer
+        assert "buy-5" not in pending_store
+
+    def test_turno_2_sin_confirmacion_limpia_y_sigue_normal(self, monkeypatch, pending_store):
+        calls = []
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order(calls, _preview()))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"]))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", _fail_never)
+
+        _run("finalizar compra", conversation_id="buy-6", chatwoot_conversation_id=42)
+        calls.clear()
+
+        # El comprador cambia de tema: no es confirmación.
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["POLITICAS"]))
+        monkeypatch.setattr(tools, "search_context", _recording_search([]))
+        fake = _FakeGroq("Los envíos tardan 3 días.")
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: fake)
+
+        result = _run("¿cuánto tarda el envío?", conversation_id="buy-6",
+                      chatwoot_conversation_id=42)
+
+        assert calls == []  # no se ejecutó ningún pago
+        assert result.answer == "Los envíos tardan 3 días."
+        assert "answer" in result.tools_used
+        assert "buy-6" not in pending_store  # el pendiente se descartó
+
+    def test_turno_2_error_de_pago_limpia_y_avisa(self, monkeypatch, pending_store):
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order([], _preview()))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"]))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", _fail_never)
+
+        _run("finalizar compra", conversation_id="buy-7", chatwoot_conversation_id=42)
+
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order([], PlaceOrderResult(
+                                status="error",
+                                confirmed=False,
+                                message="El pago fue rechazado por Wompi.",
+                            )))
+
+        result = _run("confirmo", conversation_id="buy-7", chatwoot_conversation_id=42)
+
+        assert "El pago fue rechazado por Wompi." in result.answer
+        assert "no se cobró nada" in result.answer
+        assert "buy-7" not in pending_store
+
+    def test_sin_carrito_no_guarda_pendiente(self, monkeypatch, pending_store):
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order([], _preview(order=None)))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"]))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", _fail_never)
+
+        result = _run("finalizar compra", conversation_id="buy-8",
+                      chatwoot_conversation_id=42)
+
+        assert "carrito activo" in result.answer
+        assert "buy-8" not in pending_store
+        assert result.sources_used == 0
+
+    def test_sin_identidad_degrada_cordial(self, monkeypatch, pending_store):
+        async def _boom(*args, **kwargs):
+            raise AssertionError("Sin chatwoot_conversation_id no hay llamada de identidad")
+        monkeypatch.setattr(tools, "place_order_remote", _boom)
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"]))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", _fail_never)
+
+        result = _run("finalizar compra", conversation_id="buy-9")  # sin chatwoot id
+
+        assert "no estás identificado" in result.answer
+        assert result.escalado is False
+        assert "buy-9" not in pending_store
+
+    def test_pendiente_de_otra_identidad_se_descarta(self, monkeypatch, pending_store):
+        calls = []
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order(calls, _preview()))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["CATALOGO"], {"confirmation": True}))
+        monkeypatch.setattr(tools, "search_context", _recording_search([]))
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Hola."))
+
+        pending_store["buy-10"] = {
+            "account_id": 999,
+            "inbox_id": 2,
+            "chatwoot_conversation_id": 999,
+            "paymentMethodCode": "wompi",
+            "order": dict(_PREVIEW_ORDER),
+        }
+
+        result = _run("sí, confirmo", conversation_id="buy-10",
+                      chatwoot_conversation_id=42)
+
+        # Nunca se ejecuta un cobro con las coordenadas del pendiente ajeno.
+        assert [c for c in calls if c["confirm"]] == []
+        assert "buy-10" not in pending_store
+        # Sin pendiente válido, el mensaje sigue como turno normal (sin cobrar).
+        assert result.answer == "Hola."
+
+    def test_conversacion_sin_pendiente_no_toca_place_order(self, monkeypatch, pending_store):
+        async def _boom(*args, **kwargs):
+            raise AssertionError("Sin pendiente y sin COMPRAR no hay place_order")
+        monkeypatch.setattr(tools, "place_order_remote", _boom)
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["CATALOGO"]))
+        monkeypatch.setattr(tools, "search_context", _recording_search([]))
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Ok."))
+
+        result = _run("¿tienen audífonos?", conversation_id="buy-11",
+                      chatwoot_conversation_id=42)
+
+        assert "place_order" not in result.tools_used
+
+    def test_turno_2_no_confirmacion_con_intencion_comprar_no_reabre_preview(
+        self, monkeypatch, pending_store
+    ):
+        """Un "no" tras el preview no vuelve a mostrar otro preview."""
+        calls = []
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order(calls, _preview()))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"]))
+        monkeypatch.setattr(tools, "search_context", _recording_search([]))
+        monkeypatch.setattr(tools, "get_llm", lambda *a, **k: _FakeGroq("Ok, lo dejo."))
+
+        pending_store["buy-13"] = {
+            "account_id": 1,
+            "inbox_id": 2,
+            "chatwoot_conversation_id": 42,
+            "paymentMethodCode": "wompi",
+            "order": dict(_PREVIEW_ORDER),
+        }
+
+        result = _run("no, mejor después", conversation_id="buy-13",
+                      chatwoot_conversation_id=42)
+
+        assert calls == []  # ni cobro ni preview nuevo
+        assert result.answer == "Ok, lo dejo."
+        assert "buy-13" not in pending_store
+
+    def test_historial_no_contiene_el_estado_pendiente(self, monkeypatch, pending_store,
+                                                       _fake_memory):
+        monkeypatch.setattr(tools, "place_order_remote",
+                            _recording_place_order([], _preview()))
+        monkeypatch.setattr("app.agent.core.classify_intent_detailed",
+                            _classify_with_params(["COMPRAR"]))
+        monkeypatch.setattr(tools, "search_context", _fail_never)
+        monkeypatch.setattr(tools, "get_llm", _fail_never)
+
+        _run("finalizar compra", conversation_id="buy-12", chatwoot_conversation_id=42)
+
+        saved = _fake_memory["buy-12"]
+        assert [m["role"] for m in saved] == ["user", "assistant"]
+        assert all("pending" not in m["content"].lower() for m in saved)

@@ -68,6 +68,12 @@ class Settings:
     ASSISTANT_CATALOG_TIMESTAMP_TOLERANCE_SECONDS: int = int(os.getenv("ASSISTANT_CATALOG_TIMESTAMP_TOLERANCE_SECONDS", "300"))
     ASSISTANT_CATALOG_TIMEOUT_SECONDS: float = float(os.getenv("ASSISTANT_CATALOG_TIMEOUT_SECONDS", "5"))
 
+    # --- Pago (place_order) ---
+    # Método de pago por defecto de la tienda cuando el comprador confirma la
+    # compra sin nombrar uno en su mensaje. Es el `code` del PaymentMethod de
+    # Vendure (Shop/shop `src/plugins/payment/constants.ts` -> "wompi").
+    ASSISTANT_PAYMENT_METHOD_CODE: str = os.getenv("ASSISTANT_PAYMENT_METHOD_CODE", "wompi")
+
     # Umbral de confianza de la intención: por debajo, el dispatch degrada al
     # RAG actual (keywords) en lugar de usar la query extraída.
     BIFROST_INTENT_CONFIDENCE_THRESHOLD: float = float(os.getenv("BIFROST_INTENT_CONFIDENCE_THRESHOLD", "0.4"))
