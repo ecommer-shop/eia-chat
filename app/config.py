@@ -59,6 +59,12 @@ class Settings:
         if o.strip()
     ]
 
+    # --- Autenticación de la API ---
+    # Si está definida, /agent/chat, /stores y /stores/reload exigen la cabecera
+    # X-API-Key con este valor. Vacía = sin autenticación (despliegue gradual:
+    # primero se define en eia-bot y en esta pasarela, luego se activa).
+    EIA_API_KEY: str = os.getenv("EIA_API_KEY", "")
+
     # --- Rate limiting (por IP, ventana deslizante de 1 minuto) ---
     # 0 desactiva el límite (útil para tests).
     RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))

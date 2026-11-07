@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.clients import close_clients
@@ -9,6 +9,7 @@ from app.config import settings, validate_settings
 from app.exceptions import StoreWithoutBifrostKeyError
 from app.rate_limit import RateLimitMiddleware
 from app.schemas import ChatRequest, AgentChatResponse
+from app.security import require_api_key
 from app.store_resolver import resolve_store, reload_stores
 from app.store_repository import get_all_stores
 from app.agent.core import run_agent
@@ -61,7 +62,7 @@ app.add_middleware(
 )
 
 
-@app.post("/agent/chat", response_model=AgentChatResponse)
+@app.post("/agent/chat", response_model=AgentChatResponse, dependencies=[Depends(require_api_key)])
 async def agent_chat(request: ChatRequest):
     """Fase 3/6 — Endpoint del agente conversacional (a mano, sin framework)."""
     query = request.query.strip()
@@ -111,7 +112,7 @@ async def health_check() -> dict:
     }
 
 
-@app.get("/stores")
+@app.get("/stores", dependencies=[Depends(require_api_key)])
 async def list_stores() -> dict:
     stores = await get_all_stores()
     return {
@@ -132,7 +133,7 @@ async def list_stores() -> dict:
     }
 
 
-@app.post("/stores/reload")
+@app.post("/stores/reload", dependencies=[Depends(require_api_key)])
 async def reload_stores_endpoint() -> dict:
     result = await reload_stores()
     return {"status": "ok", "message": "Tiendas recargadas", **result}

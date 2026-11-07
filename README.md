@@ -170,3 +170,17 @@ Health check is configured at `/health`.
 ## License
 
 Proprietary — Ecommer SAS
+
+
+## Autenticación de la API (`EIA_API_KEY`)
+
+`/agent/chat`, `/stores` y `/stores/reload` exigen la cabecera `X-API-Key` **solo si la variable de entorno `EIA_API_KEY` está definida**. Vacía, la API se comporta como antes (despliegue gradual). `/health` siempre queda abierto.
+
+Para activarla (primero en stage):
+
+1. Desplegar este cambio en la pasarela y el equivalente en `eia-bot` (que envía la cabecera cuando tiene la variable). Sin la variable, nada cambia.
+2. Generar una clave aleatoria larga y definir **el mismo valor** en `EIA_API_KEY` de la pasarela y de `eia-bot` (Railway → Variables; nunca en el repo ni por chat).
+3. Comprobar un mensaje de punta a punta y que `GET /stores` sin cabecera responde `401`.
+4. Repetir en producción. Para revertir basta vaciar la variable en la pasarela.
+
+Cualquier otro cliente que llame a estos endpoints (paneles, scripts) debe enviar `X-API-Key` antes de activarla.
