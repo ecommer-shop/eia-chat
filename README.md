@@ -170,3 +170,18 @@ Health check is configured at `/health`.
 ## License
 
 Proprietary — Ecommer SAS
+
+## Autenticación de la API (`EIA_API_KEY`)
+
+`/agent/chat`, `/stores` y `/stores/reload` exigen una clave **solo si la variable de entorno `EIA_API_KEY` está definida**. Vacía, la API se comporta como antes (despliegue gradual). `/health` siempre queda abierto.
+
+La clave se acepta en la cabecera `X-API-Key` o como `Authorization: Bearer <clave>`. `eia-bot` ya envía este último formato cuando tiene la variable `SIMETRIA_API_KEY`, así que **no hace falta cambiar el bot**: basta que `SIMETRIA_API_KEY` (bot) y `EIA_API_KEY` (pasarela) tengan el mismo valor.
+
+Para activarla (primero en stage):
+
+1. Desplegar este cambio (sin definir `EIA_API_KEY`: no cambia nada).
+2. Generar una clave aleatoria larga y definirla en `SIMETRIA_API_KEY` de `eia-bot` y en `EIA_API_KEY` de la pasarela (Railway → Variables; nunca en el repo ni por chat). Si `SIMETRIA_API_KEY` ya tiene otro valor en el bot, se sobrescribe.
+3. Comprobar un mensaje de punta a punta y que `GET /stores` sin clave responde `401`.
+4. Repetir en producción. Para revertir basta vaciar `EIA_API_KEY` en la pasarela.
+
+Cualquier otro cliente de estos endpoints (paneles, scripts de la tienda) debe enviar la clave antes de activarla.
