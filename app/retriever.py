@@ -75,8 +75,10 @@ async def search_context(
     query: str,
     store: StoreConfig,
     intents: list[str],
-    limit: int = 10,
+    limit: int | None = None,
 ) -> list[dict]:
+    if limit is None:
+        limit = settings.RETRIEVER_LIMIT
     logger.info("Buscando: '%s' (store=%s, intents=%s)", query, store.store_name, intents)
 
     if "CONVERSACIONAL" in intents and len(intents) == 1:
